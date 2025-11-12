@@ -4,6 +4,7 @@ import { Menu, X } from 'lucide-react';
 import { useState } from 'react';
 import { useAppKit } from '@reown/appkit/react';
 import { useAccount } from 'wagmi';
+import Link from 'next/link';
 
 export default function Header() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -31,18 +32,18 @@ export default function Header() {
 
           {/* Desktop Navigation */}
           <div className="hidden md:flex items-center gap-8">
-            <a href="#register" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
+            <Link href="/register" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
               Register
-            </a>
-            <a href="#marketplace" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
+            </Link>
+            <Link href="/marketplace" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
               Marketplace
-            </a>
-            <a href="#earnings" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
+            </Link>
+            <Link href="/dashboard" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
               Dashboard
-            </a>
-            <a href="#subscription" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
-              Subcription
-            </a>
+            </Link>
+            <Link href="/subscription" className="text-gray-700 hover:text-primary-blue font-medium transition-colors">
+              Subscriptions
+            </Link>
           </div>
 
           {/* CTA Buttons */}
@@ -71,18 +72,18 @@ export default function Header() {
         {/* Mobile Menu */}
         {isMenuOpen && (
           <div className="md:hidden mt-4 pb-4 space-y-4">
-            <a href="#Register" className="block text-gray-700 hover:text-primary-blue font-medium">
+            <Link href="/register" className="block text-gray-700 hover:text-primary-blue font-medium">
               Register
-            </a>
-            <a href="#how-it-works" className="block text-gray-700 hover:text-primary-blue font-medium">
+            </Link>
+            <Link href="/marketplace" className="block text-gray-700 hover:text-primary-blue font-medium">
               Marketplace
-            </a>
-            <a href="#use-cases" className="block text-gray-700 hover:text-primary-blue font-medium">
+            </Link>
+            <Link href="/dashboard" className="block text-gray-700 hover:text-primary-blue font-medium">
               Dashboard
-            </a>
-            <a href="#tech" className="block text-gray-700 hover:text-primary-blue font-medium">
-              Subcription
-            </a>
+            </Link>
+            <Link href="/subscription" className="block text-gray-700 hover:text-primary-blue font-medium">
+              Subscriptions
+            </Link>
             <div className="flex flex-col gap-2 pt-4">
               <button 
                 onClick={() => open()}
