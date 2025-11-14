@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { useAccount } from 'wagmi';
+import { useAccount, useWalletClient } from 'wagmi';
 import { useAppKit } from '@reown/appkit/react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
@@ -10,19 +10,23 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { CheckCircle2, Info, Download } from 'lucide-react';
+import { CheckCircle2, Info, Download, Loader2 } from 'lucide-react';
 import { RegistrationStep, DeviceType } from '@/lib/enums';
 import { useApp } from '@/context/AppContext';
+import { registerDevice } from '@/services/deviceService';
+import { generateDataId } from '@/lib/somnia';
+import { type Address } from 'viem';
 
 export default function RegisterPage() {
-  const { isConnected } = useAccount();
+  const { isConnected, address } = useAccount();
+  const { data: walletClient } = useWalletClient();
   const { open } = useAppKit();
   const router = useRouter();
   const { addUserDevice } = useApp();
   
   const [step, setStep] = useState<RegistrationStep>(RegistrationStep.ENTER_SERIAL);
   const [serialNumber, setSerialNumber] = useState('');
-  const [deviceAddress, setDeviceAddress] = useState('');
+  const [deviceAddress, setDeviceAddress] = useState<Address | ''>('');
   const [formData, setFormData] = useState({
     name: '',
     type: '',
@@ -32,46 +36,86 @@ export default function RegisterPage() {
   const [credentials, setCredentials] = useState({
     deviceId: '',
     apiKey: '',
-    apiSecret: ''
+    apiSecret: '',
+    txHash: ''
   });
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleVerifySerial = () => {
-    // Simulate serial verification and device wallet generation
-    const generatedAddress = `0x${Math.random().toString(16).substr(2, 40)}`;
-    setDeviceAddress(generatedAddress);
+    // Generate a deterministic device address from serial number
+    // In production, this could use a more sophisticated method
+    const seed = serialNumber || `device-${Date.now()}`;
+    const hash = seed.split('').reduce((acc, char) => {
+      const hash = ((acc << 5) - acc) + char.charCodeAt(0);
+      return hash & hash;
+    }, 0);
+    const address = `0x${Math.abs(hash).toString(16).padStart(40, '0')}` as Address;
+    setDeviceAddress(address);
     setStep(RegistrationStep.FILL_DETAILS);
   };
 
-  const handleRegister = () => {
-    // Simulate blockchain registration
-    const newDevice = {
-      id: `device-${Date.now()}`,
-      name: formData.name,
-      type: formData.type as DeviceType,
-      status: 'OFFLINE' as const,
-      qualityScore: 0,
-      location: formData.location,
-      totalDataPoints: 0,
-      totalEarnings: 0,
-      totalEarningsUsd: 0,
-      activeSubscribers: 0,
-      deviceAddress,
-      pricePerDataPoint: parseFloat(formData.price),
-      updateFrequency: 'Every 1 minute',
-      uptime: 0,
-      lastPublished: new Date()
-    };
-    
-    addUserDevice(newDevice);
-    
-    // Generate API credentials
-    setCredentials({
-      deviceId: newDevice.id,
-      apiKey: `ak_${Math.random().toString(36).substr(2, 32)}`,
-      apiSecret: `as_${Math.random().toString(36).substr(2, 48)}`
-    });
-    
-    setStep(RegistrationStep.SUCCESS);
+  const handleRegister = async () => {
+    if (!walletClient || !address || !deviceAddress) {
+      setError('Wallet not connected');
+      return;
+    }
+
+    setIsRegistering(true);
+    setError(null);
+
+    try {
+      // Register device on-chain using Somnia Data Streams
+      // Use owner's address (connected wallet) as publisher, deviceAddress as identifier
+      const result = await registerDevice(
+        walletClient,
+        formData.name,
+        formData.type as DeviceType,
+        formData.location,
+        parseFloat(formData.price),
+        address, // Owner's wallet address (publisher)
+        deviceAddress as Address // Device identifier address
+      );
+
+      // Generate device ID from transaction hash
+      const deviceId = `device-${result.txHash.slice(2, 10)}`;
+      
+      // Create device object for local state
+      const newDevice = {
+        id: deviceId,
+        name: formData.name,
+        type: formData.type as DeviceType,
+        status: 'ONLINE' as const,
+        qualityScore: 0,
+        location: formData.location,
+        totalDataPoints: 0,
+        totalEarnings: 0,
+        totalEarningsUsd: 0,
+        activeSubscribers: 0,
+        deviceAddress: deviceAddress as Address,
+        pricePerDataPoint: parseFloat(formData.price),
+        updateFrequency: 'Every 1 minute',
+        uptime: 0,
+        lastPublished: new Date()
+      };
+      
+      addUserDevice(newDevice);
+      
+      // Generate API credentials
+      setCredentials({
+        deviceId: deviceId,
+        apiKey: `ak_${Math.random().toString(36).substr(2, 32)}`,
+        apiSecret: `as_${Math.random().toString(36).substr(2, 48)}`,
+        txHash: result.txHash
+      });
+      
+      setStep(RegistrationStep.SUCCESS);
+    } catch (err: any) {
+      console.error('Error registering device:', err);
+      setError(err?.message || 'Failed to register device on blockchain');
+    } finally {
+      setIsRegistering(false);
+    }
   };
 
   const handleDownloadCredentials = () => {
@@ -80,7 +124,10 @@ export default function RegisterPage() {
       deviceAddress,
       apiKey: credentials.apiKey,
       apiSecret: credentials.apiSecret,
-      endpoint: 'https://api.iot-marketplace.somnia.network'
+      txHash: credentials.txHash,
+      endpoint: 'https://dream-rpc.somnia.network',
+      network: 'Somnia Testnet',
+      chainId: 50312
     };
     
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
@@ -217,13 +264,29 @@ export default function RegisterPage() {
                   />
                 </div>
 
+                {error && (
+                  <Alert className="bg-red-50 border-red-200">
+                    <Info className="h-4 w-4 text-red-600" />
+                    <AlertDescription className="text-red-700">
+                      {error}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                
                 <Button
                   onClick={handleRegister}
-                  disabled={!formData.name || !formData.type || !formData.location || !formData.price}
+                  disabled={!formData.name || !formData.type || !formData.location || !formData.price || isRegistering}
                   className="w-full gradient-primary"
                   size="lg"
                 >
-                  Complete Registration
+                  {isRegistering ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Registering on Blockchain...
+                    </>
+                  ) : (
+                    'Complete Registration'
+                  )}
                 </Button>
               </CardContent>
             </Card>
@@ -251,6 +314,18 @@ export default function RegisterPage() {
                   <div className="p-4 bg-gray-50 rounded-lg">
                     <p className="body-sm text-gray-600 mb-1">Device Address</p>
                     <p className="body-base font-mono">{deviceAddress}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="body-sm text-gray-600 mb-1">Transaction Hash</p>
+                    <p className="body-base font-mono text-sm break-all">{credentials.txHash}</p>
+                    <a 
+                      href={`https://shannon-explorer.somnia.network/tx/${credentials.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="body-sm text-primary-blue hover:underline mt-1 inline-block"
+                    >
+                      View on Explorer
+                    </a>
                   </div>
                   <div className="p-4 bg-gray-50 rounded-lg">
                     <p className="body-sm text-gray-600 mb-1">API Key</p>
