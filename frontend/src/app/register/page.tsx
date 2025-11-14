@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { useAccount } from 'wagmi';
+import { useState, useEffect, useRef } from 'react';
+import { useAccount, useWalletClient } from 'wagmi';
 import { useAppKit } from '@reown/appkit/react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
@@ -10,19 +10,37 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { CheckCircle2, Info, Download } from 'lucide-react';
+import { CheckCircle2, Info, Download, Loader2 } from 'lucide-react';
 import { RegistrationStep, DeviceType } from '@/lib/enums';
 import { useApp } from '@/context/AppContext';
+import { registerDevice } from '@/services/deviceService';
+import { registerDeviceInRegistry } from '@/services/registryService';
+import { 
+  generateAndPublishVerificationCode, 
+  verifyDeviceChallenge,
+  sendVerificationCodeToDevice,
+  readVerificationCodeFromBlockchain,
+  getVerificationCodeRemainingTime,
+  hasValidVerificationCode
+} from '@/services/deviceVerification';
+import { generateDataId } from '@/lib/somnia';
+import { parseError, getUserFriendlyMessage } from '@/lib/errors';
+import { type Address } from 'viem';
 
 export default function RegisterPage() {
-  const { isConnected } = useAccount();
+  const { isConnected, address } = useAccount();
+  const { data: walletClient } = useWalletClient();
   const { open } = useAppKit();
   const router = useRouter();
   const { addUserDevice } = useApp();
   
   const [step, setStep] = useState<RegistrationStep>(RegistrationStep.ENTER_SERIAL);
   const [serialNumber, setSerialNumber] = useState('');
-  const [deviceAddress, setDeviceAddress] = useState('');
+  const [deviceAddress, setDeviceAddress] = useState<Address | ''>('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verificationChallenge, setVerificationChallenge] = useState<{ challenge: string; verificationCode: string; expiresIn: number } | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [verificationTimer, setVerificationTimer] = useState<number>(0);
   const [formData, setFormData] = useState({
     name: '',
     type: '',
@@ -32,46 +50,252 @@ export default function RegisterPage() {
   const [credentials, setCredentials] = useState({
     deviceId: '',
     apiKey: '',
-    apiSecret: ''
+    apiSecret: '',
+    txHash: ''
   });
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const handleVerifySerial = () => {
-    // Simulate serial verification and device wallet generation
-    const generatedAddress = `0x${Math.random().toString(16).substr(2, 40)}`;
-    setDeviceAddress(generatedAddress);
-    setStep(RegistrationStep.FILL_DETAILS);
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
+    };
+  }, []);
+
+  const handleVerifySerial = async () => {
+    if (!walletClient || !address) {
+      setError('Wallet not connected');
+      return;
+    }
+
+    setIsVerifying(true);
+    setError(null);
+
+    try {
+      // Generate a deterministic device address from serial number
+      const seed = serialNumber || `device-${Date.now()}`;
+      const hash = seed.split('').reduce((acc, char) => {
+        const hash = ((acc << 5) - acc) + char.charCodeAt(0);
+        return hash & hash;
+      }, 0);
+      const deviceAddr = `0x${Math.abs(hash).toString(16).padStart(40, '0')}` as Address;
+      setDeviceAddress(deviceAddr);
+      
+      // Generate and publish verification code to blockchain
+      const result = await generateAndPublishVerificationCode(
+        walletClient,
+        serialNumber,
+        deviceAddr,
+        address
+      );
+
+      // Wait for blockchain confirmation before proceeding
+      await walletClient.waitForTransactionReceipt({ hash: result.txHash });
+      
+      setVerificationChallenge({
+        challenge: result.txHash, // Use txHash as challenge identifier
+        verificationCode: result.verificationCode,
+        expiresIn: result.expiresIn,
+      });
+      
+      // Code is now published to blockchain - device can read it directly!
+      await sendVerificationCodeToDevice(serialNumber, result.verificationCode, deviceAddr);
+      
+      // Start countdown timer
+      setVerificationTimer(result.expiresIn);
+      
+      // Clear any existing timer
+      if (timerIntervalRef.current) {
+        clearInterval(timerIntervalRef.current);
+      }
+      
+      timerIntervalRef.current = setInterval(() => {
+        setVerificationTimer(prev => {
+          if (prev <= 1) {
+            if (timerIntervalRef.current) {
+              clearInterval(timerIntervalRef.current);
+              timerIntervalRef.current = null;
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+      
+      setStep(RegistrationStep.VERIFY_DEVICE);
+    } catch (err: any) {
+      console.error('Error generating verification code:', err);
+      setError('Failed to generate verification code. Please try again.');
+    } finally {
+      setIsVerifying(false);
+    }
   };
 
-  const handleRegister = () => {
-    // Simulate blockchain registration
-    const newDevice = {
-      id: `device-${Date.now()}`,
-      name: formData.name,
-      type: formData.type as DeviceType,
-      status: 'OFFLINE' as const,
-      qualityScore: 0,
-      location: formData.location,
-      totalDataPoints: 0,
-      totalEarnings: 0,
-      totalEarningsUsd: 0,
-      activeSubscribers: 0,
-      deviceAddress,
-      pricePerDataPoint: parseFloat(formData.price),
-      updateFrequency: 'Every 1 minute',
-      uptime: 0,
-      lastPublished: new Date()
-    };
-    
-    addUserDevice(newDevice);
-    
-    // Generate API credentials
-    setCredentials({
-      deviceId: newDevice.id,
-      apiKey: `ak_${Math.random().toString(36).substr(2, 32)}`,
-      apiSecret: `as_${Math.random().toString(36).substr(2, 48)}`
-    });
-    
-    setStep(RegistrationStep.SUCCESS);
+  const handleVerifyDevice = async () => {
+    if (!walletClient || !address || !verificationCode || verificationCode.length !== 6) {
+      if (!verificationCode || verificationCode.length !== 6) {
+        setError('Please enter the 6-digit verification code');
+      } else {
+        setError('Wallet not connected');
+      }
+      return;
+    }
+
+    setIsVerifying(true);
+    setError(null);
+
+    try {
+      // Verify code from blockchain
+      const result = await verifyDeviceChallenge(serialNumber, verificationCode, address);
+      
+      if (result.verified) {
+        setStep(RegistrationStep.FILL_DETAILS);
+        setError(null);
+      } else {
+        setError(result.error || 'Verification failed. Please try again.');
+      }
+    } catch (err: any) {
+      setError('Verification error: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    if (!walletClient || !address || !deviceAddress || !serialNumber) {
+      setError('Wallet not connected');
+      return;
+    }
+
+    setIsVerifying(true);
+    setError(null);
+
+    try {
+      // Generate new verification code and publish to blockchain
+      const result = await generateAndPublishVerificationCode(
+        walletClient,
+        serialNumber,
+        deviceAddress as Address,
+        address
+      );
+
+      // Wait for blockchain confirmation before updating UI
+      await walletClient.waitForTransactionReceipt({ hash: result.txHash });
+      
+      setVerificationChallenge({
+        challenge: result.txHash,
+        verificationCode: result.verificationCode,
+        expiresIn: result.expiresIn,
+      });
+      
+      setVerificationCode('');
+      setError(null);
+      
+      await sendVerificationCodeToDevice(serialNumber, result.verificationCode, deviceAddress as Address);
+      setVerificationTimer(result.expiresIn);
+    } catch (err: any) {
+      console.error('Error resending verification code:', err);
+      setError('Failed to generate new verification code. Please try again.');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleRegister = async () => {
+    if (!walletClient || !address || !deviceAddress) {
+      setError('Wallet not connected');
+      return;
+    }
+
+    setIsRegistering(true);
+    setError(null);
+
+    try {
+      // Register device on-chain using Somnia Data Streams
+      // Use owner's address (connected wallet) as publisher, deviceAddress as identifier
+      const result = await registerDevice(
+        walletClient,
+        formData.name,
+        formData.type as DeviceType,
+        formData.location,
+        parseFloat(formData.price),
+        address, // Owner's wallet address (publisher)
+        deviceAddress as Address // Device identifier address
+      );
+
+      // Wait for verification code publish transaction to confirm
+      await walletClient.waitForTransactionReceipt({ hash: result.txHash });
+
+      // Also register device in the registry for marketplace discovery
+      try {
+        await registerDeviceInRegistry(
+          walletClient,
+          deviceAddress as Address,
+          address,
+          formData.type
+        );
+      } catch (registryError) {
+        console.warn('Failed to register device in registry (device still registered):', registryError);
+        // Continue even if registry registration fails
+      }
+
+      // Generate device ID from transaction hash
+      const deviceId = `device-${result.txHash.slice(2, 10)}`;
+      
+      // Create device object for local state
+      const newDevice = {
+        id: deviceId,
+        name: formData.name,
+        type: formData.type as DeviceType,
+        status: 'ONLINE' as const,
+        qualityScore: 0,
+        location: formData.location,
+        totalDataPoints: 0,
+        totalEarnings: 0,
+        totalEarningsUsd: 0,
+        activeSubscribers: 0,
+        deviceAddress: deviceAddress as Address,
+        ownerAddress: address, // Store owner's wallet address separately
+        pricePerDataPoint: parseFloat(formData.price),
+        updateFrequency: 'Every 1 minute',
+        uptime: 0,
+        lastPublished: new Date()
+      };
+      
+      // Save device address to localStorage for future loading
+      if (typeof window !== 'undefined' && address) {
+        const key = `user_devices_${address.toLowerCase()}`;
+        const existing = localStorage.getItem(key);
+        const addresses = existing ? JSON.parse(existing) : [];
+        if (!addresses.includes(deviceAddress)) {
+          addresses.push(deviceAddress);
+          localStorage.setItem(key, JSON.stringify(addresses));
+        }
+      }
+      
+      addUserDevice(newDevice);
+      
+      // Generate API credentials
+      setCredentials({
+        deviceId: deviceId,
+        apiKey: `ak_${Math.random().toString(36).substr(2, 32)}`,
+        apiSecret: `as_${Math.random().toString(36).substr(2, 48)}`,
+        txHash: result.txHash
+      });
+      
+      setStep(RegistrationStep.SUCCESS);
+    } catch (err: any) {
+      console.error('Error registering device:', err);
+      const appError = parseError(err);
+      const errorMessage = appError.details || appError.message || 'Failed to register device on blockchain';
+      setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
+    } finally {
+      setIsRegistering(false);
+    }
   };
 
   const handleDownloadCredentials = () => {
@@ -80,7 +304,10 @@ export default function RegisterPage() {
       deviceAddress,
       apiKey: credentials.apiKey,
       apiSecret: credentials.apiSecret,
-      endpoint: 'https://api.iot-marketplace.somnia.network'
+      txHash: credentials.txHash,
+      endpoint: 'https://dream-rpc.somnia.network',
+      network: 'Somnia Testnet',
+      chainId: 50312
     };
     
     const blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
@@ -151,17 +378,146 @@ export default function RegisterPage() {
                 
                 <Button
                   onClick={handleVerifySerial}
-                  disabled={!serialNumber}
+                  disabled={!serialNumber || !isConnected || isVerifying}
                   className="w-full gradient-primary"
                   size="lg"
                 >
-                  Verify Serial Number
+                  {isVerifying ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Publishing to Blockchain...
+                    </>
+                  ) : (
+                    'Verify Serial Number'
+                  )}
                 </Button>
               </CardContent>
             </Card>
           )}
 
-          {/* Step 2: Fill Device Details */}
+          {/* Step 2: Verify Device */}
+          {step === RegistrationStep.VERIFY_DEVICE && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="heading-lg">Verify Device Ownership</CardTitle>
+                <CardDescription>
+                  Enter the verification code displayed on your device
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <Alert className="bg-blue-50 border-blue-200">
+                  <Info className="h-4 w-4 text-primary-blue" />
+                  <AlertDescription className="text-gray-700">
+                    A verification code has been sent to your device. The code should be displayed 
+                    on your device's screen.
+                    <div className="mt-3 p-3 bg-white rounded border border-blue-200">
+                      <p className="font-semibold mb-2">Device Serial Number:</p>
+                      <p className="font-mono text-sm">{serialNumber}</p>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+
+                <Alert className="bg-green-50 border-green-200">
+                  <CheckCircle2 className="h-4 w-4 text-success-green" />
+                  <AlertDescription className="text-gray-700">
+                    <p className="font-semibold mb-2">How to get the verification code:</p>
+                    <ol className="list-decimal list-inside space-y-2 text-sm">
+                      <li>Your device should read the verification code from Somnia blockchain</li>
+                      <li>Check your device's display screen - the code should appear automatically</li>
+                      <li>Enter the 6-digit code shown on your device below</li>
+                    </ol>
+                    <div className="mt-3 p-2 bg-white rounded text-xs">
+                      <p className="font-semibold">🔗 Blockchain-based verification:</p>
+                      <p className="text-xs mt-1">
+                        The verification code has been published to Somnia blockchain. 
+                        Your device can read it directly using its serial number - no backend needed!
+                      </p>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+
+                {verificationChallenge && (
+                  <Alert className="bg-yellow-50 border-warning-yellow">
+                    <Info className="h-4 w-4 text-warning-yellow" />
+                    <AlertDescription className="text-gray-700">
+                      <p className="text-sm font-semibold mb-1">
+                        Code expires in: {Math.floor(verificationTimer / 60)}:{(verificationTimer % 60).toString().padStart(2, '0')}
+                      </p>
+                      <p className="text-xs text-gray-600">
+                        Your device should retrieve the code via the API endpoint and display it on its screen.
+                      </p>
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="space-y-2">
+                  <label className="body-base font-medium">Verification Code</label>
+                  <Input
+                    placeholder="000000"
+                    value={verificationCode}
+                    onChange={(e) => {
+                      const value = e.target.value.replace(/\D/g, '').slice(0, 6);
+                      setVerificationCode(value);
+                      setError(null);
+                    }}
+                    className="text-lg text-center font-mono tracking-widest"
+                    maxLength={6}
+                  />
+                  <p className="body-sm text-gray-600">
+                    Enter the 6-digit code from your device
+                  </p>
+                </div>
+
+                {error && (
+                  <Alert className="bg-red-50 border-red-200">
+                    <Info className="h-4 w-4 text-red-600" />
+                    <AlertDescription className="text-red-700">
+                      {error}
+                    </AlertDescription>
+                  </Alert>
+                )}
+
+                <div className="space-y-2">
+                  <Button
+                    onClick={handleVerifyDevice}
+                    disabled={!verificationCode || verificationCode.length !== 6 || isVerifying || verificationTimer === 0}
+                    className="w-full gradient-primary"
+                    size="lg"
+                  >
+                    {isVerifying ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Verifying...
+                      </>
+                    ) : (
+                      'Verify Device'
+                    )}
+                  </Button>
+
+                  <Button
+                    onClick={handleResendCode}
+                    variant="outline"
+                    className="w-full"
+                    disabled={verificationTimer > 300} // Can resend after 5 minutes
+                  >
+                    Resend Code
+                  </Button>
+                </div>
+
+                <div className="pt-4 border-t">
+                  <Button
+                    onClick={() => setStep(RegistrationStep.ENTER_SERIAL)}
+                    variant="ghost"
+                    className="w-full"
+                  >
+                    ← Back to Serial Number
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Step 3: Fill Device Details */}
           {step === RegistrationStep.FILL_DETAILS && (
             <Card>
               <CardHeader>
@@ -217,13 +573,29 @@ export default function RegisterPage() {
                   />
                 </div>
 
+                {error && (
+                  <Alert className="bg-red-50 border-red-200">
+                    <Info className="h-4 w-4 text-red-600" />
+                    <AlertDescription className="text-red-700">
+                      {error}
+                    </AlertDescription>
+                  </Alert>
+                )}
+                
                 <Button
                   onClick={handleRegister}
-                  disabled={!formData.name || !formData.type || !formData.location || !formData.price}
+                  disabled={!formData.name || !formData.type || !formData.location || !formData.price || isRegistering}
                   className="w-full gradient-primary"
                   size="lg"
                 >
-                  Complete Registration
+                  {isRegistering ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Registering on Blockchain...
+                    </>
+                  ) : (
+                    'Complete Registration'
+                  )}
                 </Button>
               </CardContent>
             </Card>
@@ -251,6 +623,18 @@ export default function RegisterPage() {
                   <div className="p-4 bg-gray-50 rounded-lg">
                     <p className="body-sm text-gray-600 mb-1">Device Address</p>
                     <p className="body-base font-mono">{deviceAddress}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="body-sm text-gray-600 mb-1">Transaction Hash</p>
+                    <p className="body-base font-mono text-sm break-all">{credentials.txHash}</p>
+                    <a 
+                      href={`https://shannon-explorer.somnia.network/tx/${credentials.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="body-sm text-primary-blue hover:underline mt-1 inline-block"
+                    >
+                      View on Explorer
+                    </a>
                   </div>
                   <div className="p-4 bg-gray-50 rounded-lg">
                     <p className="body-sm text-gray-600 mb-1">API Key</p>

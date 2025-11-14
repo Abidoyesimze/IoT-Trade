@@ -17,7 +17,7 @@ import { formatEthAmount, formatPercentage } from '@/lib/formatters';
 
 export default function MarketplacePage() {
   const router = useRouter();
-  const { marketplaceDevices } = useApp();
+  const { marketplaceDevices, isLoadingDevices } = useApp();
   const [search, setSearch] = useState('');
   const [deviceType, setDeviceType] = useState<string>('all');
   const [sortBy, setSortBy] = useState<string>(SortOption.QUALITY_SCORE);
@@ -118,6 +118,14 @@ export default function MarketplacePage() {
           </Card>
 
           {/* Devices Grid */}
+          {isLoadingDevices ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-blue mx-auto mb-4" />
+                <p className="body-base text-gray-600">Loading marketplace devices...</p>
+              </div>
+            </div>
+          ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredDevices.map((device) => (
               <Card key={device.id} className="card-hover">
@@ -178,10 +186,15 @@ export default function MarketplacePage() {
               </Card>
             ))}
           </div>
+          )}
 
-          {filteredDevices.length === 0 && (
+          {!isLoadingDevices && filteredDevices.length === 0 && (
             <div className="text-center py-12">
-              <p className="body-lg text-gray-600">No devices found matching your filters</p>
+              <p className="body-lg text-gray-600">
+                {marketplaceDevices.length === 0 
+                  ? 'No devices available in the marketplace yet. Be the first to register a device!'
+                  : 'No devices found matching your filters'}
+              </p>
             </div>
           )}
         </div>
