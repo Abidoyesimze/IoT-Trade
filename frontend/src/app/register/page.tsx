@@ -14,6 +14,7 @@ import { CheckCircle2, Info, Download, Loader2 } from 'lucide-react';
 import { RegistrationStep, DeviceType } from '@/lib/enums';
 import { useApp } from '@/context/AppContext';
 import { registerDevice } from '@/services/deviceService';
+import { registerDeviceInRegistry } from '@/services/registryService';
 import { generateDataId } from '@/lib/somnia';
 import { parseError, getUserFriendlyMessage } from '@/lib/errors';
 import { type Address } from 'viem';
@@ -77,6 +78,19 @@ export default function RegisterPage() {
         address, // Owner's wallet address (publisher)
         deviceAddress as Address // Device identifier address
       );
+
+      // Also register device in the registry for marketplace discovery
+      try {
+        await registerDeviceInRegistry(
+          walletClient,
+          deviceAddress as Address,
+          address,
+          formData.type
+        );
+      } catch (registryError) {
+        console.warn('Failed to register device in registry (device still registered):', registryError);
+        // Continue even if registry registration fails
+      }
 
       // Generate device ID from transaction hash
       const deviceId = `device-${result.txHash.slice(2, 10)}`;

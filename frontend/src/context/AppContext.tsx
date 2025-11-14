@@ -4,7 +4,7 @@ import { createContext, useContext, useState, useEffect, type ReactNode } from '
 import { useAccount } from 'wagmi';
 import type { UserDevice, UserSubscription, MarketplaceDevice, DataPoint } from '@/lib/types';
 import { mockStore } from '@/lib/mockData';
-import { loadUserDevices, getUserDeviceAddresses, saveUserDeviceAddress } from '@/services/deviceRegistry';
+import { loadUserDevices, getUserDeviceAddresses, saveUserDeviceAddress, discoverMarketplaceDevices } from '@/services/deviceRegistry';
 import type { Address } from 'viem';
 
 interface AppContextType {
@@ -31,7 +31,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const { address, isConnected } = useAccount();
   const [userDevices, setUserDevices] = useState<UserDevice[]>(USE_MOCK_DATA ? mockStore.userDevices : []);
   const [userSubscriptions, setUserSubscriptions] = useState<UserSubscription[]>(USE_MOCK_DATA ? mockStore.userSubscriptions : []);
-  const [marketplaceDevices] = useState<MarketplaceDevice[]>(USE_MOCK_DATA ? mockStore.marketplaceDevices : []);
+  const [marketplaceDevices, setMarketplaceDevices] = useState<MarketplaceDevice[]>(USE_MOCK_DATA ? mockStore.marketplaceDevices : []);
   const [liveDataPoints] = useState<DataPoint[]>([]);
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
 
@@ -60,6 +60,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // Load marketplace devices from blockchain
+  const refreshMarketplaceDevices = async () => {
+    if (USE_MOCK_DATA) {
+      return; // Skip in development mode with mock data
+    }
+
+    setIsLoadingDevices(true);
+    try {
+      const devices = await discoverMarketplaceDevices(50);
+      setMarketplaceDevices(devices);
+    } catch (error) {
+      console.error('Error loading marketplace devices:', error);
+      // Keep existing devices on error
+    } finally {
+      setIsLoadingDevices(false);
+    }
+  };
+
   // Load devices when wallet connects
   useEffect(() => {
     if (isConnected && address) {
@@ -69,6 +87,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setUserSubscriptions([]);
     }
   }, [isConnected, address]);
+
+  // Load marketplace devices on mount
+  useEffect(() => {
+    refreshMarketplaceDevices();
+  }, []);
 
   const addUserDevice = (device: UserDevice) => {
     // Save device address to localStorage
@@ -86,6 +109,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Add new device
       return [...prev, device];
     });
+
+    // Refresh marketplace devices to include the newly registered device
+    if (!USE_MOCK_DATA) {
+      refreshMarketplaceDevices();
+    }
   };
 
   const updateUserDevice = (deviceId: string, updates: Partial<UserDevice>) => {

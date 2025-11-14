@@ -101,23 +101,48 @@ export function saveUserDeviceAddress(ownerAddress: Address, deviceAddress: Addr
 /**
  * Discover marketplace devices
  * 
- * Note: This is a placeholder. In a full implementation, you would:
- * 1. Use an on-chain registry contract that stores device metadata
- * 2. Query events for device registrations
- * 3. Use an indexing service (like The Graph)
+ * Implementation uses:
+ * 1. Local discovery list (shared across users via localStorage)
+ * 2. On-chain metadata lookup for each device
+ * 3. Falls back to empty array if no devices found
  * 
- * For now, we'll return an empty array. Mock data can be used for development.
+ * In production, you could enhance this with:
+ * - An on-chain registry contract
+ * - Event querying/indexing
+ * - The Graph or similar indexing service
  */
 export async function discoverMarketplaceDevices(
   limit: number = 50
 ): Promise<MarketplaceDevice[]> {
-  // TODO: Implement device discovery from blockchain
-  // This would require:
-  // 1. A device registry contract
-  // 2. Event querying
-  // 3. Or an indexing service
-  
-  return [];
+  try {
+    // Get discoverable devices from shared list
+    const { getDiscoverableDevices } = await import('./registryService');
+    const discoverableDevices = getDiscoverableDevices();
+    
+    if (discoverableDevices.length === 0) {
+      return [];
+    }
+    
+    // Load metadata for each discoverable device
+    const devices: MarketplaceDevice[] = [];
+    
+    for (const { deviceAddress, ownerAddress } of discoverableDevices.slice(0, limit)) {
+      try {
+        const device = await loadMarketplaceDevice(ownerAddress, deviceAddress);
+        if (device) {
+          devices.push(device);
+        }
+      } catch (error) {
+        console.error(`Error loading device ${deviceAddress}:`, error);
+        // Continue loading other devices
+      }
+    }
+    
+    return devices;
+  } catch (error) {
+    console.error('Error discovering marketplace devices:', error);
+    return [];
+  }
 }
 
 /**
