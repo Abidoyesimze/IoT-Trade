@@ -15,6 +15,7 @@ import { RegistrationStep, DeviceType } from '@/lib/enums';
 import { useApp } from '@/context/AppContext';
 import { registerDevice } from '@/services/deviceService';
 import { generateDataId } from '@/lib/somnia';
+import { parseError, getUserFriendlyMessage } from '@/lib/errors';
 import { type Address } from 'viem';
 
 export default function RegisterPage() {
@@ -113,7 +114,9 @@ export default function RegisterPage() {
       setStep(RegistrationStep.SUCCESS);
     } catch (err: any) {
       console.error('Error registering device:', err);
-      setError(err?.message || 'Failed to register device on blockchain');
+      const appError = parseError(err);
+      const errorMessage = appError.details || appError.message || 'Failed to register device on blockchain';
+      setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
     } finally {
       setIsRegistering(false);
     }

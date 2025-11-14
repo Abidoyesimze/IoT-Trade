@@ -13,6 +13,7 @@ import { useApp } from '@/context/AppContext';
 import { ViewMode, TimeRange } from '@/lib/enums';
 import { formatDateTime, formatRelativeTime } from '@/lib/formatters';
 import { readDeviceData } from '@/services/deviceService';
+import { parseError, getUserFriendlyMessage } from '@/lib/errors';
 import type { DataPoint } from '@/lib/types';
 
 export default function LiveDashboardPage({ params }: { params: { id: string } }) {
@@ -55,11 +56,13 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
         });
         setLastUpdate(new Date());
       } else {
-        setError('No data available for this device');
+        setError('No data available for this device. The device may not have published any data yet.');
       }
     } catch (err: any) {
       console.error('Error fetching device data:', err);
-      setError(err?.message || 'Failed to fetch device data');
+      const appError = parseError(err);
+      const errorMessage = appError.details || appError.message || 'Failed to fetch device data';
+      setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
     } finally {
       setIsLoading(false);
     }

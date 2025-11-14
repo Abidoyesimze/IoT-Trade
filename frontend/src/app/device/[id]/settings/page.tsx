@@ -17,6 +17,8 @@ import { useApp } from '@/context/AppContext';
 import { DeviceType } from '@/lib/enums';
 import { formatDateTime } from '@/lib/formatters';
 import { publishGPSData, publishWeatherData, publishAirQualityData } from '@/services/deviceService';
+import { validateGPSData, validateWeatherData, validateAirQualityData, validateWalletConnection, formatValidationErrors } from '@/lib/validation';
+import { parseError, getUserFriendlyMessage, isRecoverableError } from '@/lib/errors';
 import type { Address } from 'viem';
 
 export default function DeviceSettingsPage({ params }: { params: { id: string } }) {
@@ -107,8 +109,22 @@ export default function DeviceSettingsPage({ params }: { params: { id: string } 
 
   // Handle data publishing
   const handlePublishGPS = async () => {
-    if (!walletClient || !device || !address) {
-      setPublishError('Wallet not connected');
+    // Validate wallet connection
+    const walletValidation = validateWalletConnection(address);
+    if (!walletValidation.isValid) {
+      setPublishError(formatValidationErrors(walletValidation.errors));
+      return;
+    }
+
+    if (!walletClient || !device) {
+      setPublishError('Wallet or device not available');
+      return;
+    }
+
+    // Validate GPS data
+    const validation = validateGPSData(gpsData);
+    if (!validation.isValid) {
+      setPublishError(formatValidationErrors(validation.errors));
       return;
     }
 
@@ -124,29 +140,53 @@ export default function DeviceSettingsPage({ params }: { params: { id: string } 
           timestamp: BigInt(Date.now()),
           latitude: parseFloat(gpsData.latitude),
           longitude: parseFloat(gpsData.longitude),
-          altitude: parseFloat(gpsData.altitude),
-          accuracy: parseInt(gpsData.accuracy),
-          speed: parseInt(gpsData.speed),
-          heading: parseInt(gpsData.heading),
+          altitude: parseFloat(gpsData.altitude) || 0,
+          accuracy: parseInt(gpsData.accuracy) || 0,
+          speed: parseInt(gpsData.speed) || 0,
+          heading: parseInt(gpsData.heading) || 0,
         }
       );
 
-      setPublishSuccess(`Data published! TX: ${txHash.slice(0, 10)}...`);
+      const explorerUrl = `https://shannon-explorer.somnia.network/tx/${txHash}`;
+      setPublishSuccess(`Data published successfully! Transaction: ${txHash.slice(0, 10)}...`);
+      
+      // Update device stats
       updateUserDevice(device.id, {
         totalDataPoints: device.totalDataPoints + 1,
         lastPublished: new Date()
       });
+
+      // Clear form after successful publish
+      setTimeout(() => {
+        setPublishSuccess(null);
+      }, 5000);
     } catch (err: any) {
       console.error('Error publishing GPS data:', err);
-      setPublishError(err?.message || 'Failed to publish data');
+      const appError = parseError(err);
+      const errorMessage = appError.details || appError.message || 'Failed to publish data';
+      setPublishError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
     } finally {
       setIsPublishingData(false);
     }
   };
 
   const handlePublishWeather = async () => {
-    if (!walletClient || !device || !address) {
-      setPublishError('Wallet not connected');
+    // Validate wallet connection
+    const walletValidation = validateWalletConnection(address);
+    if (!walletValidation.isValid) {
+      setPublishError(formatValidationErrors(walletValidation.errors));
+      return;
+    }
+
+    if (!walletClient || !device) {
+      setPublishError('Wallet or device not available');
+      return;
+    }
+
+    // Validate weather data
+    const validation = validateWeatherData(weatherData);
+    if (!validation.isValid) {
+      setPublishError(formatValidationErrors(validation.errors));
       return;
     }
 
@@ -169,22 +209,45 @@ export default function DeviceSettingsPage({ params }: { params: { id: string } 
         }
       );
 
-      setPublishSuccess(`Data published! TX: ${txHash.slice(0, 10)}...`);
+      setPublishSuccess(`Data published successfully! Transaction: ${txHash.slice(0, 10)}...`);
+      
+      // Update device stats
       updateUserDevice(device.id, {
         totalDataPoints: device.totalDataPoints + 1,
         lastPublished: new Date()
       });
+
+      // Clear form after successful publish
+      setTimeout(() => {
+        setPublishSuccess(null);
+      }, 5000);
     } catch (err: any) {
       console.error('Error publishing weather data:', err);
-      setPublishError(err?.message || 'Failed to publish data');
+      const appError = parseError(err);
+      const errorMessage = appError.details || appError.message || 'Failed to publish data';
+      setPublishError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
     } finally {
       setIsPublishingData(false);
     }
   };
 
   const handlePublishAirQuality = async () => {
-    if (!walletClient || !device || !address) {
-      setPublishError('Wallet not connected');
+    // Validate wallet connection
+    const walletValidation = validateWalletConnection(address);
+    if (!walletValidation.isValid) {
+      setPublishError(formatValidationErrors(walletValidation.errors));
+      return;
+    }
+
+    if (!walletClient || !device) {
+      setPublishError('Wallet or device not available');
+      return;
+    }
+
+    // Validate air quality data
+    const validation = validateAirQualityData(airQualityData);
+    if (!validation.isValid) {
+      setPublishError(formatValidationErrors(validation.errors));
       return;
     }
 
@@ -207,14 +270,23 @@ export default function DeviceSettingsPage({ params }: { params: { id: string } 
         }
       );
 
-      setPublishSuccess(`Data published! TX: ${txHash.slice(0, 10)}...`);
+      setPublishSuccess(`Data published successfully! Transaction: ${txHash.slice(0, 10)}...`);
+      
+      // Update device stats
       updateUserDevice(device.id, {
         totalDataPoints: device.totalDataPoints + 1,
         lastPublished: new Date()
       });
+
+      // Clear form after successful publish
+      setTimeout(() => {
+        setPublishSuccess(null);
+      }, 5000);
     } catch (err: any) {
       console.error('Error publishing air quality data:', err);
-      setPublishError(err?.message || 'Failed to publish data');
+      const appError = parseError(err);
+      const errorMessage = appError.details || appError.message || 'Failed to publish data';
+      setPublishError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
     } finally {
       setIsPublishingData(false);
     }
@@ -362,7 +434,22 @@ export default function DeviceSettingsPage({ params }: { params: { id: string } 
                   <Alert className="bg-green-50 border-green-200">
                     <CheckCircle2 className="h-4 w-4 text-success-green" />
                     <AlertDescription className="text-green-700">
-                      {publishSuccess}
+                      <div className="space-y-1">
+                        <p>{publishSuccess}</p>
+                        {publishSuccess.includes('Transaction:') && (
+                          <p className="text-xs text-gray-600 mt-1">
+                            View on{' '}
+                            <a
+                              href={`https://shannon-explorer.somnia.network/tx/${publishSuccess.split('Transaction:')[1]?.trim()?.split('...')[0]}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="underline hover:text-primary-blue"
+                            >
+                              Somnia Explorer
+                            </a>
+                          </p>
+                        )}
+                      </div>
                     </AlertDescription>
                   </Alert>
                 )}
@@ -371,7 +458,17 @@ export default function DeviceSettingsPage({ params }: { params: { id: string } 
                   <Alert className="bg-red-50 border-red-200">
                     <AlertTriangle className="h-4 w-4 text-red-600" />
                     <AlertDescription className="text-red-700">
-                      {publishError}
+                      <div className="space-y-1">
+                        <p className="font-medium">{publishError.split(':')[0]}</p>
+                        {publishError.includes(':') && (
+                          <p className="text-sm mt-1">{publishError.split(':').slice(1).join(':').trim()}</p>
+                        )}
+                        {isRecoverableError(parseError({ message: publishError })) && (
+                          <p className="text-xs text-gray-600 mt-2">
+                            You can try again. If the problem persists, check your network connection.
+                          </p>
+                        )}
+                      </div>
                     </AlertDescription>
                   </Alert>
                 )}
