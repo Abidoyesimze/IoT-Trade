@@ -13,7 +13,7 @@ import { formatEthAmount, formatUsdAmount, formatPercentage, formatCount } from 
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { userDevices } = useApp();
+  const { userDevices, isLoadingDevices } = useApp();
 
   return (
     <>
@@ -30,7 +30,14 @@ export default function DashboardPage() {
           </div>
 
           {/* Devices Grid */}
-          {userDevices.length === 0 ? (
+          {isLoadingDevices ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-blue mx-auto mb-4" />
+                <p className="body-base text-gray-600">Loading devices from blockchain...</p>
+              </div>
+            </div>
+          ) : userDevices.length === 0 ? (
             <EmptyState
               icon={Database}
               title="No devices yet"

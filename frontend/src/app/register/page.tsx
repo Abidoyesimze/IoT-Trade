@@ -101,6 +101,17 @@ export default function RegisterPage() {
         lastPublished: new Date()
       };
       
+      // Save device address to localStorage for future loading
+      if (typeof window !== 'undefined' && address) {
+        const key = `user_devices_${address.toLowerCase()}`;
+        const existing = localStorage.getItem(key);
+        const addresses = existing ? JSON.parse(existing) : [];
+        if (!addresses.includes(deviceAddress)) {
+          addresses.push(deviceAddress);
+          localStorage.setItem(key, JSON.stringify(addresses));
+        }
+      }
+      
       addUserDevice(newDevice);
       
       // Generate API credentials
