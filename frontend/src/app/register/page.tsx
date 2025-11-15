@@ -14,7 +14,7 @@ import { CheckCircle2, Info, Download, Loader2 } from 'lucide-react';
 import { RegistrationStep, DeviceType } from '@/lib/enums';
 import { useApp } from '@/context/AppContext';
 import { registerDevice } from '@/services/deviceService';
-import { registerDeviceInRegistry } from '@/services/registryService';
+import { registerDeviceOnChain } from '@/services/registryService';
 import { 
   generateAndPublishVerificationCode, 
   verifyDeviceChallenge,
@@ -41,7 +41,8 @@ export default function RegisterPage() {
     name: '',
     type: '',
     location: '',
-    price: ''
+    price: '',
+    subscriptionDurationDays: '30',
   });
   const [credentials, setCredentials] = useState({
     deviceId: '',
@@ -252,30 +253,42 @@ export default function RegisterPage() {
 
     try {
       const walletClient = await getWalletClient();
-      // Register device on-chain using Somnia Data Streams
-      // Use owner's address (connected wallet) as publisher, deviceAddress as identifier
+      const priceFloat = parseFloat(formData.price);
+      if (Number.isNaN(priceFloat) || priceFloat <= 0) {
+        throw new Error('Invalid price per data point');
+      }
+      const durationDays = parseInt(formData.subscriptionDurationDays, 10);
+      if (Number.isNaN(durationDays) || durationDays <= 0) {
+        throw new Error('Invalid subscription duration');
+      }
+      const priceWei = BigInt(Math.round(priceFloat * 1e18));
+      const durationSeconds = BigInt(durationDays * 24 * 60 * 60);
+
+      const metadata = {
+        name: formData.name,
+        type: formData.type,
+        location: formData.location,
+      };
+
+      await registerDeviceOnChain(walletClient, {
+        deviceAddress: deviceAddress as Address,
+        name: formData.name,
+        deviceType: formData.type,
+        location: formData.location,
+        pricePerDataPoint: priceWei,
+        subscriptionDuration: durationSeconds,
+        metadataURI: JSON.stringify(metadata),
+      });
+
       const result = await registerDevice(
         walletClient,
         formData.name,
         formData.type as DeviceType,
         formData.location,
-        parseFloat(formData.price),
-        address, // Owner's wallet address (publisher)
-        deviceAddress as Address // Device identifier address
+        priceFloat,
+        address,
+        deviceAddress as Address
       );
-
-      // Also register device in the registry for marketplace discovery
-      try {
-        await registerDeviceInRegistry(
-          walletClient,
-          deviceAddress as Address,
-          address,
-          formData.type
-        );
-      } catch (registryError) {
-        console.warn('Failed to register device in registry (device still registered):', registryError);
-        // Continue even if registry registration fails
-      }
 
       // Generate device ID from transaction hash
       const deviceId = `device-${result.txHash.slice(2, 10)}`;
@@ -294,7 +307,7 @@ export default function RegisterPage() {
         activeSubscribers: 0,
         deviceAddress: deviceAddress as Address,
         ownerAddress: address, // Store owner's wallet address separately
-        pricePerDataPoint: parseFloat(formData.price),
+        pricePerDataPoint: priceFloat,
         updateFrequency: 'Every 1 minute',
         uptime: 0,
         lastPublished: new Date()
@@ -601,10 +614,24 @@ export default function RegisterPage() {
                   <Input
                     type="number"
                     step="0.00001"
+                    min="0"
                     placeholder="0.00001"
                     value={formData.price}
                     onChange={(e) => setFormData({ ...formData, price: e.target.value })}
                   />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="body-base font-medium">Subscription Duration (days)</label>
+                  <Input
+                    type="number"
+                    min="1"
+                    step="1"
+                    placeholder="30"
+                    value={formData.subscriptionDurationDays}
+                    onChange={(e) => setFormData({ ...formData, subscriptionDurationDays: e.target.value })}
+                  />
+                  <p className="body-sm text-gray-600">How long purchasers can access data after each payment.</p>
                 </div>
 
                 {error && (
