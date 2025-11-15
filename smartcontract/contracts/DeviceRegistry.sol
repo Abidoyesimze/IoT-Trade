@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 /**
  * @title DeviceRegistry
- * @notice Minimal on-chain registry for IoT-Trade devices, inspired by Streamr-style stream listings.
+ * @notice Minimal on-chain registry for IoT-Trade devices.
  */
 contract DeviceRegistry {
     struct Device {
@@ -22,6 +22,30 @@ contract DeviceRegistry {
     mapping(address owner => address[]) private ownerToDevices;
     address[] private deviceIndex;
 
+    mapping(address buyer => mapping(address device => uint256 totalPaid)) private payments;
+
+    event DeviceAccessPurchased(
+        address indexed buyer,
+        address indexed deviceAddress,
+        uint256 amount
+    );
+    function purchaseAccess(address deviceAddress) external payable {
+        require(isRegistered[deviceAddress], "DeviceRegistry: device not registered");
+        Device memory deviceInfo = devices[deviceAddress];
+        require(deviceInfo.isActive, "DeviceRegistry: device not active");
+        require(msg.value >= deviceInfo.pricePerDataPoint, "DeviceRegistry: insufficient payment");
+
+        payments[msg.sender][deviceAddress] += msg.value;
+
+        (bool success, ) = deviceInfo.owner.call{value: msg.value}("");
+        require(success, "DeviceRegistry: payment failed");
+
+        emit DeviceAccessPurchased(msg.sender, deviceAddress, msg.value);
+    }
+
+    function totalPaid(address buyer, address deviceAddress) external view returns (uint256) {
+        return payments[buyer][deviceAddress];
+    }
     event DeviceRegistered(
         address indexed owner,
         address indexed deviceAddress,

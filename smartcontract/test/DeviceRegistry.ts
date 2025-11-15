@@ -35,7 +35,8 @@ describe("DeviceRegistry", async () => {
     );
 
     const device = await registry.read.getDevice([sampleDevice.address]);
-    assert.equal(device.owner, owner.account.address);
+    const normalizedOwner = owner.account.address.toLowerCase();
+    assert.equal(device.owner.toLowerCase(), normalizedOwner);
     assert.equal(device.name, sampleDevice.name);
 
     const ownerDevices = await registry.read.getDevicesByOwner([owner.account.address]);
@@ -94,6 +95,40 @@ describe("DeviceRegistry", async () => {
 
     const device = await registry.read.getDevice([sampleDevice.address]);
     assert.equal(device.isActive, false);
+  });
+
+  it("records payments and forwards STT to owners", async () => {
+    const registry = await viem.deployContract("DeviceRegistry");
+    const [owner, buyer] = await viem.getWalletClients();
+
+    await registry.write.registerDevice(
+      [
+        sampleDevice.address,
+        sampleDevice.name,
+        sampleDevice.type,
+        sampleDevice.location,
+        sampleDevice.price,
+        sampleDevice.metadataURI,
+      ],
+      { account: owner.account },
+    );
+
+    const ownerBalanceBefore = await viem.getPublicClient().getBalance(owner.account.address);
+
+    await viem.assertions.emit(
+      registry.write.purchaseAccess([sampleDevice.address], {
+        account: buyer.account,
+        value: sampleDevice.price,
+      }),
+      registry,
+      "DeviceAccessPurchased",
+    );
+
+    const paid = await registry.read.totalPaid([buyer.account.address, sampleDevice.address]);
+    assert.equal(paid, sampleDevice.price);
+
+    const ownerBalanceAfter = await viem.getPublicClient().getBalance(owner.account.address);
+    assert.ok(ownerBalanceAfter > ownerBalanceBefore);
   });
 });
 
