@@ -1,4 +1,5 @@
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
+import "@nomicfoundation/hardhat-verify";
 import { defineConfig } from "hardhat/config";
 import "dotenv/config";
 
@@ -55,4 +56,25 @@ export default defineConfig({
     },
   },
   networks,
+  verify: {
+    apiKey: {
+      somnia: "empty",
+    },
+    customChains: [
+      {
+        network: "somnia",
+        chainId: 50312,
+        urls: {
+          apiURL: "https://shannon-explorer.somnia.network/api",
+          browserURL: "https://shannon-explorer.somnia.network",
+        },
+      },
+    ],
+    blockscout: {
+      enabled: false,
+    },
+    sourcify: {
+      enabled: false,
+    },
+  },
 });
