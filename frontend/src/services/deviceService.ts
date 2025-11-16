@@ -258,45 +258,62 @@ export async function readDeviceData(
     const dataId = generateDataId(deviceAddress);
     
     // Read data from the publisher's stream
-    const encodedData = await readData(schema, publisherAddress, dataId);
+    const data = await readData(schema, publisherAddress, dataId);
     
-    if (!encodedData || encodedData === '0x' || encodedData === '0x0') {
+    if (!data || data === '0x' || data === '0x0') {
       return null;
     }
     
-    // Validate encoded data format
-    if (typeof encodedData !== 'string' || !encodedData.startsWith('0x')) {
-      console.warn('Invalid encoded data format:', encodedData);
-      return null;
-    }
-    
+    // If the schema is public, the SDK may already return a decoded object.
+    // Otherwise, it returns raw hex that we need to decode.
+    // See: Somnia Quickstart - Direct data read without reactivity
+    // https://docs.somnia.network/somnia-data-streams/getting-started/quickstart
+    // Try to interpret both cases.
+    const maybeDecoded: any = data as any;
+    const isHex = typeof data === 'string' && (data as string).startsWith('0x');
+
     // Decode based on device type with error handling
     let decoded: any;
     try {
       switch (deviceType) {
-        case DeviceType.GPS_TRACKER:
-          decoded = decodeGPSData(encodedData);
+        case DeviceType.GPS_TRACKER: {
+          if (isHex) {
+            decoded = decodeGPSData(data as any);
+          } else {
+            decoded = maybeDecoded;
+          }
           return {
             timestamp: new Date(Number(decoded.timestamp)),
-            value: decoded.latitude, // Using latitude as primary value
+            value: decoded.latitude,
             status: "verified" as const,
             latitude: decoded.latitude,
             longitude: decoded.longitude,
           };
-        case DeviceType.WEATHER_STATION:
-          decoded = decodeWeatherData(encodedData);
+        }
+        case DeviceType.WEATHER_STATION: {
+          if (isHex) {
+            decoded = decodeWeatherData(data as any);
+          } else {
+            decoded = maybeDecoded;
+          }
           return {
             timestamp: new Date(Number(decoded.timestamp)),
             value: decoded.temperature,
             status: "verified" as const,
           };
-        case DeviceType.AIR_QUALITY_MONITOR:
-          decoded = decodeAirQualityData(encodedData);
+        }
+        case DeviceType.AIR_QUALITY_MONITOR: {
+          if (isHex) {
+            decoded = decodeAirQualityData(data as any);
+          } else {
+            decoded = maybeDecoded;
+          }
           return {
             timestamp: new Date(Number(decoded.timestamp)),
             value: decoded.aqi,
             status: "verified" as const,
           };
+        }
         default:
           return null;
       }
