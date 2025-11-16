@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, use } from 'react';
+import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,14 +11,19 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Download, MapPin, TrendingUp, Table as TableIcon, AlertCircle, Loader2 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useApp } from '@/context/AppContext';
-import { ViewMode, TimeRange } from '@/lib/enums';
+import { ViewMode, TimeRange, DeviceType, DeviceStatus } from '@/lib/enums';
 import { formatDateTime, formatRelativeTime } from '@/lib/formatters';
 import { readDeviceData } from '@/services/deviceService';
 import { parseError, getUserFriendlyMessage } from '@/lib/errors';
-import type { DataPoint } from '@/lib/types';
+import type { DataPoint, MarketplaceDevice, UserDevice } from '@/lib/types';
+import type { Address } from 'viem';
 
-export default function LiveDashboardPage({ params }: { params: { id: string } }) {
-  const { marketplaceDevices, userDevices } = useApp();
+export default function LiveDashboardPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const { marketplaceDevices, userDevices, refreshMarketplaceDevices } = useApp();
+  const [device, setDevice] = useState<(MarketplaceDevice | UserDevice) | null>(null);
+  const [isLoadingDevice, setIsLoadingDevice] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.CHART);
   const [timeRange, setTimeRange] = useState<TimeRange>(TimeRange.ONE_HOUR);
   const [liveData, setLiveData] = useState<DataPoint[]>([]);
@@ -25,7 +31,76 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  const device = [...marketplaceDevices, ...userDevices].find(d => d.id === params.id);
+  // Load device by ID
+  useEffect(() => {
+    const loadDevice = async () => {
+      setIsLoadingDevice(true);
+      try {
+        // First try to find in existing devices
+        let foundDevice = [...marketplaceDevices, ...userDevices].find(d => d.id === id);
+        
+        // If not found, try refreshing marketplace and search again
+        if (!foundDevice) {
+          await refreshMarketplaceDevices();
+          // Get updated devices from context after refresh
+          // Note: This might not work immediately due to async state updates
+          // So we'll also try loading directly from registry
+        }
+        
+        // If still not found, load directly from registry
+        if (!foundDevice) {
+          const { fetchAllRegistryDevices } = await import('@/services/registryService');
+          const { calculateDeviceMetrics } = await import('@/services/deviceService');
+          const allDevices = await fetchAllRegistryDevices();
+          
+          const registryDevice = allDevices.find(d => {
+            const deviceId = `device-${d.address.slice(2, 10)}`;
+            return deviceId === id;
+          });
+          
+          if (registryDevice && registryDevice.isActive) {
+            const metrics = await calculateDeviceMetrics(
+              registryDevice.owner,
+              registryDevice.address as Address,
+              registryDevice.deviceType as DeviceType,
+              registryDevice.registeredAt
+            );
+            
+            // Convert to MarketplaceDevice format
+            foundDevice = {
+              id: `device-${registryDevice.address.slice(2, 10)}`,
+              name: registryDevice.name,
+              type: registryDevice.deviceType as DeviceType,
+              status: metrics.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
+              qualityScore: 0,
+              location: registryDevice.location,
+              pricePerDataPoint: registryDevice.pricePerDataPoint,
+              subscribers: 0,
+              owner: registryDevice.owner,
+              updateFrequency: metrics.updateFrequency,
+              uptime: metrics.uptime,
+              deviceAddress: registryDevice.address,
+              ownerAddress: registryDevice.owner,
+            } as MarketplaceDevice;
+          }
+        }
+        
+        if (foundDevice) {
+          setDevice(foundDevice);
+        } else {
+          setError('Device not found');
+        }
+      } catch (err) {
+        console.error('Error loading device:', err);
+        setError('Failed to load device');
+      } finally {
+        setIsLoadingDevice(false);
+      }
+    };
+
+    loadDevice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   // Read data from Somnia stream
   const fetchDeviceData = async () => {
@@ -81,6 +156,7 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
     }, 5000);
 
     return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device?.id, device?.deviceAddress]);
 
   // For devices without data, show mock data fallback
@@ -97,15 +173,34 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
     };
     
     setLiveData([mockPoint]);
-  }, [device]);
+  }, [device, liveData.length]);
 
-  if (!device) {
+  // Show loading state while loading device
+  if (isLoadingDevice) {
     return (
       <>
         <Header />
         <main className="min-h-screen pt-24 pb-12 px-6">
-          <div className="max-w-7xl mx-auto text-center">
-            <p className="body-lg text-gray-600">Device not found</p>
+          <div className="max-w-7xl mx-auto text-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-primary-blue" />
+            <p className="body-lg text-gray-600">Loading device...</p>
+          </div>
+        </main>
+      </>
+    );
+  }
+
+  // Show error if device not found
+  if (!device || error) {
+    return (
+      <>
+        <Header />
+        <main className="min-h-screen pt-24 pb-12 px-6">
+          <div className="max-w-7xl mx-auto text-center py-12">
+            <p className="body-lg text-gray-600 mb-4">{error || 'Device not found'}</p>
+            <Button onClick={() => router.push('/marketplace')} variant="outline">
+              Back to Marketplace
+            </Button>
           </div>
         </main>
       </>
@@ -163,16 +258,18 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
   }
 
   const handleExport = (format: 'CSV' | 'JSON') => {
+    if (!device) return;
+    
     let content: string;
     let filename: string;
 
     if (format === 'CSV') {
       content = 'Timestamp,Value,Status\n' + 
         liveData.map(p => `${p.timestamp.toISOString()},${p.value},${p.status}`).join('\n');
-      filename = `device-${params.id}-data.csv`;
+      filename = `device-${device.id}-data.csv`;
     } else {
       content = JSON.stringify(liveData, null, 2);
-      filename = `device-${params.id}-data.json`;
+      filename = `device-${device.id}-data.json`;
     }
 
     const blob = new Blob([content], { type: format === 'CSV' ? 'text/csv' : 'application/json' });

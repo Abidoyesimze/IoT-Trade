@@ -170,7 +170,8 @@ export default function RegisterPage() {
         deviceAddress as Address,
       );
 
-      const deviceId = `device-${registryTxHash.slice(2, 10)}`;
+      // Use device address for consistent ID format (matches registry)
+      const deviceId = `device-${deviceAddress.slice(2, 10)}`;
       const newDevice = {
         id: deviceId,
         name: formData.name,
