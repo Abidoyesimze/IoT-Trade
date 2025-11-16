@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, use } from 'react';
+import { useState, useEffect, use, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -30,24 +30,31 @@ export default function LiveDashboardPage({ params }: { params: Promise<{ id: st
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const deviceLoadedRef = useRef(false);
 
-  // Load device by ID
+  // Load device by ID - only run once per id
   useEffect(() => {
+    // Prevent re-loading if device is already loaded for this id
+    if (deviceLoadedRef.current && device?.id === id && device?.deviceAddress) {
+      return;
+    }
+
+    let cancelled = false;
+    let loadingStarted = false;
+
     const loadDevice = async () => {
+      // Prevent multiple concurrent loads
+      if (loadingStarted) return;
+      loadingStarted = true;
+
       setIsLoadingDevice(true);
+      setError(null);
+      
       try {
         // First try to find in existing devices
-        let foundDevice = [...marketplaceDevices, ...userDevices].find(d => d.id === id);
+        let foundDevice = [...marketplaceDevices, ...userDevices].find(d => d.id === id && d.deviceAddress);
         
-        // If not found, try refreshing marketplace and search again
-        if (!foundDevice) {
-          await refreshMarketplaceDevices();
-          // Get updated devices from context after refresh
-          // Note: This might not work immediately due to async state updates
-          // So we'll also try loading directly from registry
-        }
-        
-        // If still not found, load directly from registry
+        // If not found, try loading directly from registry (skip refresh to avoid blinking)
         if (!foundDevice) {
           const { fetchAllRegistryDevices } = await import('@/services/registryService');
           const { calculateDeviceMetrics } = await import('@/services/deviceService');
@@ -58,7 +65,7 @@ export default function LiveDashboardPage({ params }: { params: Promise<{ id: st
             return deviceId === id;
           });
           
-          if (registryDevice && registryDevice.isActive) {
+          if (registryDevice && registryDevice.isActive && registryDevice.address) {
             const metrics = await calculateDeviceMetrics(
               registryDevice.owner,
               registryDevice.address as Address,
@@ -85,20 +92,45 @@ export default function LiveDashboardPage({ params }: { params: Promise<{ id: st
           }
         }
         
-        if (foundDevice) {
-          setDevice(foundDevice);
+        if (cancelled) return;
+        
+        if (foundDevice && foundDevice.deviceAddress) {
+          // Only update if device changed to prevent unnecessary re-renders
+          setDevice(prev => {
+            if (prev?.id === foundDevice?.id && prev?.deviceAddress === foundDevice?.deviceAddress) {
+              return prev;
+            }
+            return foundDevice;
+          });
+          deviceLoadedRef.current = true;
         } else {
-          setError('Device not found');
+          setError('Device not found or invalid');
+          setIsLoadingDevice(false);
         }
       } catch (err) {
+        if (cancelled) return;
         console.error('Error loading device:', err);
         setError('Failed to load device');
       } finally {
-        setIsLoadingDevice(false);
+        if (!cancelled) {
+          setIsLoadingDevice(false);
+          loadingStarted = false;
+        }
       }
     };
 
+    // Reset ref when id changes
+    if (device?.id !== id) {
+      deviceLoadedRef.current = false;
+      loadingStarted = false;
+    }
+
     loadDevice();
+
+    return () => {
+      cancelled = true;
+      loadingStarted = false;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -106,15 +138,38 @@ export default function LiveDashboardPage({ params }: { params: Promise<{ id: st
   const fetchDeviceData = async () => {
     if (!device) return;
 
+    // Validate device addresses
+    const deviceAddress = device.deviceAddress;
+    const ownerAddress = (device.ownerAddress || device.deviceAddress);
+    
+    if (!deviceAddress || typeof deviceAddress !== 'string' || !deviceAddress.startsWith('0x')) {
+      console.error('Invalid device address:', deviceAddress);
+      if (liveData.length === 0) {
+        setError('Invalid device address. Device may not be properly registered.');
+      }
+      return;
+    }
+
+    if (!ownerAddress || typeof ownerAddress !== 'string' || !ownerAddress.startsWith('0x')) {
+      console.error('Invalid owner address:', ownerAddress);
+      if (liveData.length === 0) {
+        setError('Invalid owner address. Device may not be properly registered.');
+      }
+      return;
+    }
+
     try {
-      setIsLoading(true);
-      setError(null);
+      // Only set loading on initial fetch, not on subsequent polls
+      if (liveData.length === 0) {
+        setIsLoading(true);
+      }
       
       // Read data from the device owner's stream
-      // Use ownerAddress as publisher, deviceAddress as identifier
-      const ownerAddress = (device.ownerAddress || device.deviceAddress) as `0x${string}`;
-      const deviceAddress = device.deviceAddress as `0x${string}`;
-      const dataPoint = await readDeviceData(ownerAddress, deviceAddress, device.type);
+      const dataPoint = await readDeviceData(
+        ownerAddress as `0x${string}`, 
+        deviceAddress as `0x${string}`, 
+        device.type
+      );
       
       if (dataPoint) {
         // Update live data (keep last 20 points)
@@ -130,34 +185,43 @@ export default function LiveDashboardPage({ params }: { params: Promise<{ id: st
           return [...prev, dataPoint].slice(-20);
         });
         setLastUpdate(new Date());
-      } else {
+        setError(null); // Clear error on successful data fetch
+      } else if (liveData.length === 0) {
+        // Only show error if we have no data at all
         setError('No data available for this device. The device may not have published any data yet.');
       }
     } catch (err: any) {
       console.error('Error fetching device data:', err);
-      const appError = parseError(err);
-      const errorMessage = appError.details || appError.message || 'Failed to fetch device data';
-      setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
+      // Only show error on initial fetch, not on polling errors
+      if (liveData.length === 0) {
+        const appError = parseError(err);
+        const errorMessage = appError.details || appError.message || 'Failed to fetch device data';
+        setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
+      }
     } finally {
-      setIsLoading(false);
+      if (liveData.length === 0) {
+        setIsLoading(false);
+      }
     }
   };
 
   // Initial fetch and periodic updates
   useEffect(() => {
-    if (!device) return;
+    if (!device || !device.deviceAddress) return;
 
     // Fetch immediately
     fetchDeviceData();
 
     // Poll for updates every 5 seconds
     const interval = setInterval(() => {
-      fetchDeviceData();
+      if (device && device.deviceAddress) {
+        fetchDeviceData();
+      }
     }, 5000);
 
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [device?.id, device?.deviceAddress]);
+  }, [device?.id]);
 
   // For devices without data, show mock data fallback
   useEffect(() => {
@@ -410,8 +474,8 @@ export default function LiveDashboardPage({ params }: { params: Promise<{ id: st
                           </Button>
                         ))}
                       </div>
-                      <div className="h-96">
-                        <ResponsiveContainer width="100%" height="100%">
+                      <div className="h-96 min-w-0 w-full">
+                        <ResponsiveContainer width="100%" height="100%" minHeight={384}>
                           <LineChart data={chartData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
                             <XAxis 
