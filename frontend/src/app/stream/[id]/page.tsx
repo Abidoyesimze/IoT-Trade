@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, use, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import Header from '@/components/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,36 +11,167 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Download, MapPin, TrendingUp, Table as TableIcon, AlertCircle, Loader2 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { useApp } from '@/context/AppContext';
-import { ViewMode, TimeRange } from '@/lib/enums';
+import { ViewMode, TimeRange, DeviceType, DeviceStatus } from '@/lib/enums';
 import { formatDateTime, formatRelativeTime } from '@/lib/formatters';
 import { readDeviceData } from '@/services/deviceService';
 import { parseError, getUserFriendlyMessage } from '@/lib/errors';
-import type { DataPoint } from '@/lib/types';
+import type { DataPoint, MarketplaceDevice, UserDevice } from '@/lib/types';
+import type { Address } from 'viem';
 
-export default function LiveDashboardPage({ params }: { params: { id: string } }) {
-  const { marketplaceDevices, userDevices } = useApp();
+export default function LiveDashboardPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
+  const router = useRouter();
+  const { marketplaceDevices, userDevices, refreshMarketplaceDevices } = useApp();
+  const [device, setDevice] = useState<(MarketplaceDevice | UserDevice) | null>(null);
+  const [isLoadingDevice, setIsLoadingDevice] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>(ViewMode.CHART);
   const [timeRange, setTimeRange] = useState<TimeRange>(TimeRange.ONE_HOUR);
   const [liveData, setLiveData] = useState<DataPoint[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const deviceLoadedRef = useRef(false);
+  const [chartMounted, setChartMounted] = useState(false);
+  const chartContainerRef = useRef<HTMLDivElement>(null);
 
-  const device = [...marketplaceDevices, ...userDevices].find(d => d.id === params.id);
+  // Load device by ID - only run once per id
+  useEffect(() => {
+    // Prevent re-loading if device is already loaded for this id
+    if (deviceLoadedRef.current && device?.id === id && device?.deviceAddress) {
+      return;
+    }
+
+    let cancelled = false;
+    let loadingStarted = false;
+
+    const loadDevice = async () => {
+      // Prevent multiple concurrent loads
+      if (loadingStarted) return;
+      loadingStarted = true;
+
+      setIsLoadingDevice(true);
+      setError(null);
+      
+      try {
+        // First try to find in existing devices
+        let foundDevice = [...marketplaceDevices, ...userDevices].find(d => d.id === id && d.deviceAddress);
+        
+        // If not found, try loading directly from registry (skip refresh to avoid blinking)
+        if (!foundDevice) {
+          const { fetchAllRegistryDevices } = await import('@/services/registryService');
+          const { calculateDeviceMetrics } = await import('@/services/deviceService');
+          const allDevices = await fetchAllRegistryDevices();
+          
+          const registryDevice = allDevices.find(d => {
+            const deviceId = `device-${d.address.slice(2, 10)}`;
+            return deviceId === id;
+          });
+          
+          if (registryDevice && registryDevice.isActive && registryDevice.address) {
+            const metrics = await calculateDeviceMetrics(
+              registryDevice.owner,
+              registryDevice.address as Address,
+              registryDevice.deviceType as DeviceType,
+              registryDevice.registeredAt
+            );
+            
+            // Convert to MarketplaceDevice format
+            foundDevice = {
+              id: `device-${registryDevice.address.slice(2, 10)}`,
+              name: registryDevice.name,
+              type: registryDevice.deviceType as DeviceType,
+              status: metrics.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
+              qualityScore: 0,
+              location: registryDevice.location,
+              pricePerDataPoint: registryDevice.pricePerDataPoint,
+              subscribers: 0,
+              owner: registryDevice.owner,
+              updateFrequency: metrics.updateFrequency,
+              uptime: metrics.uptime,
+              deviceAddress: registryDevice.address,
+              ownerAddress: registryDevice.owner,
+            } as MarketplaceDevice;
+          }
+        }
+        
+        if (cancelled) return;
+        
+        if (foundDevice && foundDevice.deviceAddress) {
+          // Only update if device changed to prevent unnecessary re-renders
+          setDevice(prev => {
+            if (prev?.id === foundDevice?.id && prev?.deviceAddress === foundDevice?.deviceAddress) {
+              return prev;
+            }
+            return foundDevice;
+          });
+          deviceLoadedRef.current = true;
+        } else {
+          setError('Device not found or invalid');
+          setIsLoadingDevice(false);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Error loading device:', err);
+        setError('Failed to load device');
+      } finally {
+        if (!cancelled) {
+          setIsLoadingDevice(false);
+          loadingStarted = false;
+        }
+      }
+    };
+
+    // Reset ref when id changes
+    if (device?.id !== id) {
+      deviceLoadedRef.current = false;
+      loadingStarted = false;
+    }
+
+    loadDevice();
+
+    return () => {
+      cancelled = true;
+      loadingStarted = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   // Read data from Somnia stream
   const fetchDeviceData = async () => {
     if (!device) return;
 
+    // Validate device addresses
+    const deviceAddress = device.deviceAddress;
+    const ownerAddress = (device.ownerAddress || device.deviceAddress);
+    
+    if (!deviceAddress || typeof deviceAddress !== 'string' || !deviceAddress.startsWith('0x')) {
+      console.error('Invalid device address:', deviceAddress);
+      if (liveData.length === 0) {
+        setError('Invalid device address. Device may not be properly registered.');
+      }
+      return;
+    }
+
+    if (!ownerAddress || typeof ownerAddress !== 'string' || !ownerAddress.startsWith('0x')) {
+      console.error('Invalid owner address:', ownerAddress);
+      if (liveData.length === 0) {
+        setError('Invalid owner address. Device may not be properly registered.');
+      }
+      return;
+    }
+
     try {
-      setIsLoading(true);
-      setError(null);
+      // Only set loading on initial fetch, not on subsequent polls
+      if (liveData.length === 0) {
+        setIsLoading(true);
+      }
       
       // Read data from the device owner's stream
-      // Use ownerAddress as publisher, deviceAddress as identifier
-      const ownerAddress = (device.ownerAddress || device.deviceAddress) as `0x${string}`;
-      const deviceAddress = device.deviceAddress as `0x${string}`;
-      const dataPoint = await readDeviceData(ownerAddress, deviceAddress, device.type);
+      const dataPoint = await readDeviceData(
+        ownerAddress as `0x${string}`, 
+        deviceAddress as `0x${string}`, 
+        device.type
+      );
       
       if (dataPoint) {
         // Update live data (keep last 20 points)
@@ -55,33 +187,43 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
           return [...prev, dataPoint].slice(-20);
         });
         setLastUpdate(new Date());
-      } else {
+        setError(null); // Clear error on successful data fetch
+      } else if (liveData.length === 0) {
+        // Only show error if we have no data at all
         setError('No data available for this device. The device may not have published any data yet.');
       }
     } catch (err: any) {
       console.error('Error fetching device data:', err);
-      const appError = parseError(err);
-      const errorMessage = appError.details || appError.message || 'Failed to fetch device data';
-      setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
+      // Only show error on initial fetch, not on polling errors
+      if (liveData.length === 0) {
+        const appError = parseError(err);
+        const errorMessage = appError.details || appError.message || 'Failed to fetch device data';
+        setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
+      }
     } finally {
-      setIsLoading(false);
+      if (liveData.length === 0) {
+        setIsLoading(false);
+      }
     }
   };
 
   // Initial fetch and periodic updates
   useEffect(() => {
-    if (!device) return;
+    if (!device || !device.deviceAddress) return;
 
     // Fetch immediately
     fetchDeviceData();
 
     // Poll for updates every 5 seconds
     const interval = setInterval(() => {
-      fetchDeviceData();
+      if (device && device.deviceAddress) {
+        fetchDeviceData();
+      }
     }, 5000);
 
     return () => clearInterval(interval);
-  }, [device?.id, device?.deviceAddress]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [device?.id]);
 
   // For devices without data, show mock data fallback
   useEffect(() => {
@@ -97,15 +239,55 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
     };
     
     setLiveData([mockPoint]);
-  }, [device]);
+  }, [device, liveData.length]);
 
-  if (!device) {
+  // Mount chart only when chart tab is active and container is ready
+  useEffect(() => {
+    if (viewMode === ViewMode.CHART && chartContainerRef.current) {
+      // Small delay to ensure container has dimensions
+      const timer = setTimeout(() => {
+        if (chartContainerRef.current) {
+          const rect = chartContainerRef.current.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            setChartMounted(true);
+          }
+        }
+      }, 100);
+      return () => {
+        clearTimeout(timer);
+        setChartMounted(false);
+      };
+    } else {
+      setChartMounted(false);
+    }
+  }, [viewMode, liveData.length]);
+
+  // Show loading state while loading device
+  if (isLoadingDevice) {
     return (
       <>
         <Header />
         <main className="min-h-screen pt-24 pb-12 px-6">
-          <div className="max-w-7xl mx-auto text-center">
-            <p className="body-lg text-gray-600">Device not found</p>
+          <div className="max-w-7xl mx-auto text-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-primary-blue" />
+            <p className="body-lg text-gray-600">Loading device...</p>
+          </div>
+        </main>
+      </>
+    );
+  }
+
+  // Show error if device not found
+  if (!device || error) {
+    return (
+      <>
+        <Header />
+        <main className="min-h-screen pt-24 pb-12 px-6">
+          <div className="max-w-7xl mx-auto text-center py-12">
+            <p className="body-lg text-gray-600 mb-4">{error || 'Device not found'}</p>
+            <Button onClick={() => router.push('/marketplace')} variant="outline">
+              Back to Marketplace
+            </Button>
           </div>
         </main>
       </>
@@ -163,16 +345,18 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
   }
 
   const handleExport = (format: 'CSV' | 'JSON') => {
+    if (!device) return;
+    
     let content: string;
     let filename: string;
 
     if (format === 'CSV') {
       content = 'Timestamp,Value,Status\n' + 
         liveData.map(p => `${p.timestamp.toISOString()},${p.value},${p.status}`).join('\n');
-      filename = `device-${params.id}-data.csv`;
+      filename = `device-${device.id}-data.csv`;
     } else {
       content = JSON.stringify(liveData, null, 2);
-      filename = `device-${params.id}-data.json`;
+      filename = `device-${device.id}-data.json`;
     }
 
     const blob = new Blob([content], { type: format === 'CSV' ? 'text/csv' : 'application/json' });
@@ -313,36 +497,46 @@ export default function LiveDashboardPage({ params }: { params: { id: string } }
                           </Button>
                         ))}
                       </div>
-                      <div className="h-96">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                            <XAxis 
-                              dataKey="time" 
-                              stroke="#6B7280"
-                              style={{ fontSize: '12px' }}
-                            />
-                            <YAxis 
-                              stroke="#6B7280"
-                              style={{ fontSize: '12px' }}
-                            />
-                            <Tooltip 
-                              contentStyle={{ 
-                                backgroundColor: '#fff',
-                                border: '1px solid #E5E7EB',
-                                borderRadius: '8px'
-                              }}
-                            />
-                            <Line 
-                              type="monotone" 
-                              dataKey="value" 
-                              stroke="#0066FF" 
-                              strokeWidth={2}
-                              dot={{ fill: '#0066FF', r: 3 }}
-                              activeDot={{ r: 5 }}
-                            />
-                          </LineChart>
-                        </ResponsiveContainer>
+                      <div 
+                        ref={chartContainerRef}
+                        className="h-96 w-full"
+                        style={{ minWidth: 0, minHeight: 384 }}
+                      >
+                        {chartMounted && chartData.length > 0 ? (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={chartData}>
+                              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                              <XAxis 
+                                dataKey="time" 
+                                stroke="#6B7280"
+                                style={{ fontSize: '12px' }}
+                              />
+                              <YAxis 
+                                stroke="#6B7280"
+                                style={{ fontSize: '12px' }}
+                              />
+                              <Tooltip 
+                                contentStyle={{ 
+                                  backgroundColor: '#fff',
+                                  border: '1px solid #E5E7EB',
+                                  borderRadius: '8px'
+                                }}
+                              />
+                              <Line 
+                                type="monotone" 
+                                dataKey="value" 
+                                stroke="#0066FF" 
+                                strokeWidth={2}
+                                dot={{ fill: '#0066FF', r: 3 }}
+                                activeDot={{ r: 5 }}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        ) : (
+                          <div className="h-full flex items-center justify-center">
+                            <Loader2 className="w-6 h-6 animate-spin text-primary-blue" />
+                          </div>
+                        )}
                       </div>
                     </>
                   )}

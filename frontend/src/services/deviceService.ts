@@ -128,6 +128,121 @@ export async function publishAirQualityData(
 }
 
 /**
+ * Calculate device metrics from data activity
+ * @param publisherAddress - The wallet address that published the data (owner's address)
+ * @param deviceAddress - The device identifier address (used for dataId generation)
+ * @param deviceType - Type of device
+ * @param registeredAtMs - Device registration timestamp in milliseconds
+ */
+export async function calculateDeviceMetrics(
+  publisherAddress: Address,
+  deviceAddress: Address,
+  deviceType: DeviceType,
+  registeredAtMs: number
+): Promise<{
+  updateFrequency: string;
+  uptime: number;
+  lastPublished: Date | null;
+  isActive: boolean;
+}> {
+  try {
+    // Read latest data point to check if device is active
+    const latestData = await readDeviceData(publisherAddress, deviceAddress, deviceType);
+    const now = Date.now();
+    
+    if (!latestData) {
+      // No data published - device is inactive
+      const daysSinceRegistration = (now - registeredAtMs) / (1000 * 60 * 60 * 24);
+      return {
+        updateFrequency: 'No data published',
+        uptime: 0,
+        lastPublished: null,
+        isActive: false,
+      };
+    }
+
+    // Device has published data - calculate metrics
+    const lastPublishedMs = latestData.timestamp.getTime();
+    const timeSinceLastUpdate = now - lastPublishedMs;
+    const timeSinceRegistration = now - registeredAtMs;
+    
+    // Consider device active if published data within last 24 hours
+    const isActive = timeSinceLastUpdate < 24 * 60 * 60 * 1000;
+    
+    // Calculate uptime based on recent activity
+    // If device published recently, calculate percentage of time since registration that it was active
+    // For simplicity, if published within last 24h, assume 100% uptime
+    // If older, decrease based on last update time
+    let uptime = 0;
+    if (isActive) {
+      // Device is currently active
+      const hoursSinceRegistration = timeSinceRegistration / (1000 * 60 * 60);
+      if (hoursSinceRegistration < 24) {
+        // Less than 24 hours since registration, assume 100% uptime
+        uptime = 100;
+      } else {
+        // Calculate based on how recently data was published
+        // If data is within last hour: 100%, within last 6 hours: 95%, etc.
+        const hoursSinceUpdate = timeSinceLastUpdate / (1000 * 60 * 60);
+        if (hoursSinceUpdate < 1) {
+          uptime = 100;
+        } else if (hoursSinceUpdate < 6) {
+          uptime = 95;
+        } else if (hoursSinceUpdate < 12) {
+          uptime = 90;
+        } else {
+          uptime = 85;
+        }
+      }
+    } else {
+      // Device inactive - uptime decreases based on how long since last update
+      const daysSinceUpdate = timeSinceLastUpdate / (1000 * 60 * 60 * 24);
+      uptime = Math.max(0, 100 - (daysSinceUpdate * 10));
+    }
+
+    // Calculate update frequency from last published timestamp
+    // Format as "Every X minutes/hours" or "N/A"
+    let updateFrequency = 'N/A';
+    if (timeSinceRegistration > 0) {
+      // Estimate frequency based on registration time vs last update
+      // This is a rough estimate - real frequency would need multiple data points
+      const daysSinceReg = timeSinceRegistration / (1000 * 60 * 60 * 24);
+      if (daysSinceReg > 0 && isActive) {
+        // If active and registered recently, show estimated frequency
+        if (timeSinceLastUpdate < 60 * 1000) {
+          updateFrequency = 'Every minute';
+        } else if (timeSinceLastUpdate < 5 * 60 * 1000) {
+          updateFrequency = 'Every 5 minutes';
+        } else if (timeSinceLastUpdate < 15 * 60 * 1000) {
+          updateFrequency = 'Every 15 minutes';
+        } else if (timeSinceLastUpdate < 60 * 60 * 1000) {
+          updateFrequency = 'Every hour';
+        } else {
+          updateFrequency = `Every ${Math.round(timeSinceLastUpdate / (60 * 60 * 1000))} hours`;
+        }
+      } else {
+        updateFrequency = 'Inactive';
+      }
+    }
+
+    return {
+      updateFrequency,
+      uptime: Math.round(uptime * 10) / 10,
+      lastPublished: latestData.timestamp,
+      isActive,
+    };
+  } catch (error) {
+    console.error('Error calculating device metrics:', error);
+    return {
+      updateFrequency: 'N/A',
+      uptime: 0,
+      lastPublished: null,
+      isActive: false,
+    };
+  }
+}
+
+/**
  * Read latest data from a device stream
  * @param publisherAddress - The wallet address that published the data (owner's address)
  * @param deviceAddress - The device identifier address (used for dataId generation)
@@ -143,43 +258,76 @@ export async function readDeviceData(
     const dataId = generateDataId(deviceAddress);
     
     // Read data from the publisher's stream
-    const encodedData = await readData(schema, publisherAddress, dataId);
+    const data = await readData(schema, publisherAddress, dataId);
     
-    if (!encodedData) {
+    if (!data || data === '0x' || data === '0x0') {
       return null;
     }
     
-    // Decode based on device type
+    // If the schema is public, the SDK may already return a decoded object.
+    // Otherwise, it returns raw hex that we need to decode.
+    // See: Somnia Quickstart - Direct data read without reactivity
+    // https://docs.somnia.network/somnia-data-streams/getting-started/quickstart
+    // Try to interpret both cases.
+    const maybeDecoded: any = data as any;
+    const isHex = typeof data === 'string' && (data as string).startsWith('0x');
+
+    // Decode based on device type with error handling
     let decoded: any;
-    switch (deviceType) {
-      case DeviceType.GPS_TRACKER:
-        decoded = decodeGPSData(encodedData);
-        return {
-          timestamp: new Date(Number(decoded.timestamp)),
-          value: decoded.latitude, // Using latitude as primary value
-          status: "verified" as const,
-          latitude: decoded.latitude,
-          longitude: decoded.longitude,
-        };
-      case DeviceType.WEATHER_STATION:
-        decoded = decodeWeatherData(encodedData);
-        return {
-          timestamp: new Date(Number(decoded.timestamp)),
-          value: decoded.temperature,
-          status: "verified" as const,
-        };
-      case DeviceType.AIR_QUALITY_MONITOR:
-        decoded = decodeAirQualityData(encodedData);
-        return {
-          timestamp: new Date(Number(decoded.timestamp)),
-          value: decoded.aqi,
-          status: "verified" as const,
-        };
-      default:
-        return null;
+    try {
+      switch (deviceType) {
+        case DeviceType.GPS_TRACKER: {
+          if (isHex) {
+            decoded = decodeGPSData(data as any);
+          } else {
+            decoded = maybeDecoded;
+          }
+          return {
+            timestamp: new Date(Number(decoded.timestamp)),
+            value: decoded.latitude,
+            status: "verified" as const,
+            latitude: decoded.latitude,
+            longitude: decoded.longitude,
+          };
+        }
+        case DeviceType.WEATHER_STATION: {
+          if (isHex) {
+            decoded = decodeWeatherData(data as any);
+          } else {
+            decoded = maybeDecoded;
+          }
+          return {
+            timestamp: new Date(Number(decoded.timestamp)),
+            value: decoded.temperature,
+            status: "verified" as const,
+          };
+        }
+        case DeviceType.AIR_QUALITY_MONITOR: {
+          if (isHex) {
+            decoded = decodeAirQualityData(data as any);
+          } else {
+            decoded = maybeDecoded;
+          }
+          return {
+            timestamp: new Date(Number(decoded.timestamp)),
+            value: decoded.aqi,
+            status: "verified" as const,
+          };
+        }
+        default:
+          return null;
+      }
+    } catch (decodeError: any) {
+      // If decode fails, log but don't throw - device might not have published data yet
+      console.warn(`Failed to decode data for device ${deviceAddress}:`, decodeError?.message || decodeError);
+      return null;
     }
   } catch (error) {
-    console.error("Error reading device data:", error);
+    // Silently return null - device might not have data yet
+    // Only log if it's not a common "no data" scenario
+    if (error instanceof Error && !error.message.includes('decode')) {
+      console.error("Error reading device data:", error);
+    }
     return null;
   }
 }
@@ -209,7 +357,7 @@ export async function readDeviceMetadata(
     }
     
     const encoder = new SchemaEncoder(DEVICE_METADATA_SCHEMA);
-    const decoded = encoder.decode(encodedData);
+    const decoded = (encoder as any).decode(encodedData);
     
     return {
       deviceName: decoded.deviceName,
