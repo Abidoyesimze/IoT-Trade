@@ -123,16 +123,20 @@ export async function discoverMarketplaceDevices(
       try {
         // Calculate real metrics from Somnia Data Streams
         // Wrap in timeout to prevent hanging if device has no data
+        const metricsPromise = calculateDeviceMetrics(
+          device.owner,
+          device.address as Address,
+          device.deviceType as DeviceType,
+          device.registeredAt
+        );
+        
+        const timeoutPromise = new Promise<null>((_, reject) => 
+          setTimeout(() => reject(new Error('Metrics calculation timeout')), 3000)
+        );
+        
         const metrics = await Promise.race([
-          calculateDeviceMetrics(
-            device.owner,
-            device.address as Address,
-            device.deviceType as DeviceType,
-            device.registeredAt
-          ),
-          new Promise<typeof import('./deviceService').calculateDeviceMetrics extends (...args: any[]) => Promise<infer R> ? R : never>((_, reject) => 
-            setTimeout(() => reject(new Error('Metrics calculation timeout')), 10000)
-          ),
+          metricsPromise,
+          timeoutPromise,
         ]).catch((error) => {
           // If metrics calculation fails, return fallback
           console.warn(`Metrics calculation failed for device ${device.address}:`, error?.message || error);
@@ -158,6 +162,8 @@ export async function discoverMarketplaceDevices(
             pricePerDataPoint: device.pricePerDataPoint,
             subscribers: 0,
             owner: device.owner,
+            deviceAddress: device.address,
+            ownerAddress: device.owner,
             updateFrequency: 'N/A',
             uptime: Math.round(uptimePercentage * 10) / 10,
           });
@@ -172,6 +178,8 @@ export async function discoverMarketplaceDevices(
             pricePerDataPoint: device.pricePerDataPoint,
             subscribers: 0, // Would need to track from purchase events or subgraph
             owner: device.owner,
+            deviceAddress: device.address,
+            ownerAddress: device.owner,
             updateFrequency: metrics.updateFrequency,
             uptime: metrics.uptime,
           });
@@ -197,6 +205,8 @@ export async function discoverMarketplaceDevices(
           pricePerDataPoint: device.pricePerDataPoint,
           subscribers: 0,
           owner: device.owner,
+          deviceAddress: device.address,
+          ownerAddress: device.owner,
           updateFrequency: 'N/A',
           uptime: Math.round(uptimePercentage * 10) / 10,
         });
@@ -244,6 +254,8 @@ export async function loadMarketplaceDevice(
       pricePerDataPoint: device.pricePerDataPoint,
       subscribers: 0, // Would need to track from purchase events
       owner: device.owner,
+      deviceAddress: device.address,
+      ownerAddress: device.owner,
       updateFrequency: metrics.updateFrequency,
       uptime: metrics.uptime,
     };

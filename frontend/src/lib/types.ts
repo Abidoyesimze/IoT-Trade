@@ -47,6 +47,9 @@ export interface MarketplaceDevice {
   pricePerDataPoint: number;
   subscribers: number;
   owner: string;
+  // Added for Streams reads
+  deviceAddress: string; // Device identifier address (for dataId generation)
+  ownerAddress: string;  // Publisher address used to read streams (usually same as owner)
   updateFrequency: string;
   uptime: number;
 }
