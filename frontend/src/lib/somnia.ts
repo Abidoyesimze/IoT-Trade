@@ -92,7 +92,7 @@ export function encodeGPSData(data: Omit<GPSData, "entityId" | "nonce">, entityI
  */
 export function decodeGPSData(encodedData: Hex): GPSData {
   const encoder = new SchemaEncoder(GPS_TRACKER_SCHEMA);
-  const decoded = encoder.decode(encodedData);
+  const decoded = (encoder as any).decode(encodedData);
   
   return {
     timestamp: BigInt(decoded.timestamp),
@@ -130,7 +130,7 @@ export function encodeWeatherData(data: Omit<WeatherData, "entityId" | "nonce">,
  */
 export function decodeWeatherData(encodedData: Hex): WeatherData {
   const encoder = new SchemaEncoder(WEATHER_STATION_SCHEMA);
-  const decoded = encoder.decode(encodedData);
+  const decoded = (encoder as any).decode(encodedData);
   
   return {
     timestamp: BigInt(decoded.timestamp),
@@ -168,7 +168,7 @@ export function encodeAirQualityData(data: Omit<AirQualityData, "entityId" | "no
  */
 export function decodeAirQualityData(encodedData: Hex): AirQualityData {
   const encoder = new SchemaEncoder(AIR_QUALITY_MONITOR_SCHEMA);
-  const decoded = encoder.decode(encodedData);
+  const decoded = (encoder as any).decode(encodedData);
   
   return {
     timestamp: BigInt(decoded.timestamp),

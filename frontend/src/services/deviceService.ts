@@ -324,7 +324,7 @@ export async function readDeviceMetadata(
     }
     
     const encoder = new SchemaEncoder(DEVICE_METADATA_SCHEMA);
-    const decoded = encoder.decode(encodedData);
+    const decoded = (encoder as any).decode(encodedData);
     
     return {
       deviceName: decoded.deviceName,
