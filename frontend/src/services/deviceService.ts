@@ -357,7 +357,11 @@ export async function readDeviceMetadata(
     }
     
     const encoder = new SchemaEncoder(DEVICE_METADATA_SCHEMA);
-    const decoded = (encoder as any).decode(encodedData);
+    const decoder = (encoder as any).decode || (encoder as any).decodeData;
+    if (!decoder || typeof decoder !== 'function') {
+      throw new Error('SchemaEncoder decode method not available. Encoder may not be properly initialized.');
+    }
+    const decoded = decoder.call(encoder, encodedData);
     
     return {
       deviceName: decoded.deviceName,
