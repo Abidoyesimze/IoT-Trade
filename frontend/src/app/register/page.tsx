@@ -9,13 +9,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Separator } from '@/components/ui/separator';
 import { CheckCircle2, Info, Download, Loader2 } from 'lucide-react';
 import { DeviceType, DeviceStatus } from '@/lib/enums';
 import { useApp } from '@/context/AppContext';
 import { registerDevice, publishGPSData, publishWeatherData, publishAirQualityData } from '@/services/deviceService';
 import { registerDeviceOnChain } from '@/services/registryService';
 import { parseError, getUserFriendlyMessage } from '@/lib/errors';
+import { validateGPSData, validateWeatherData, validateAirQualityData, formatValidationErrors } from '@/lib/validation';
 import { type Address, createWalletClient, createPublicClient, http, custom, keccak256, stringToHex } from 'viem';
 import { somniaTestnet } from '@/config/wagmi';
 
@@ -43,6 +46,32 @@ export default function RegisterPage() {
     price: '',
     subscriptionDurationDays: '30',
   });
+  // Sensor data state - conditionally shown based on device type
+  const [sensorData, setSensorData] = useState({
+    // GPS Tracker
+    latitude: '',
+    longitude: '',
+    altitude: '0',
+    accuracy: '10',
+    speed: '0',
+    heading: '0',
+    // Weather Station
+    temperature: '',
+    humidity: '',
+    pressure: '',
+    windSpeed: '0',
+    windDirection: '0',
+    rainfall: '0',
+    // Air Quality Monitor
+    pm25: '',
+    pm10: '',
+    co2: '',
+    no2: '',
+    o3: '',
+    aqi: '',
+  });
+  const [includeSensorData, setIncludeSensorData] = useState(true);
+  const [sensorDataError, setSensorDataError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState({
     deviceId: '',
     apiKey: '',
@@ -170,49 +199,100 @@ export default function RegisterPage() {
         deviceAddress as Address,
       );
 
-      // Publish initial sample sensor data to prevent metrics timeout
-      // This helps with testing and makes metrics available immediately
-      try {
-        const sampleDataTimestamp = BigInt(Date.now());
-        switch (formData.type as DeviceType) {
-          case DeviceType.GPS_TRACKER:
-            await publishGPSData(walletClient, deviceAddress as Address, {
-              timestamp: sampleDataTimestamp,
-              latitude: 37.7749, // Default: San Francisco
-              longitude: -122.4194,
-              altitude: 0,
-              accuracy: 10,
-              speed: 0,
-              heading: 0,
-            });
-            break;
-          case DeviceType.WEATHER_STATION:
-            await publishWeatherData(walletClient, deviceAddress as Address, {
-              timestamp: sampleDataTimestamp,
-              temperature: 72.5,
-              humidity: 65.0,
-              pressure: 1013.25,
-              windSpeed: 5.0,
-              windDirection: 180,
-              rainfall: 0.0,
-            });
-            break;
-          case DeviceType.AIR_QUALITY_MONITOR:
-            await publishAirQualityData(walletClient, deviceAddress as Address, {
-              timestamp: sampleDataTimestamp,
-              pm25: 15,
-              pm10: 25,
-              co2: 400,
-              no2: 20,
-              o3: 50,
-              aqi: 45,
-            });
-            break;
+      // Publish real sensor data if provided (optional but recommended)
+      let dataPublished = false;
+      if (includeSensorData) {
+        try {
+          const dataTimestamp = BigInt(Date.now());
+          let validation;
+          
+          switch (formData.type as DeviceType) {
+            case DeviceType.GPS_TRACKER:
+              validation = validateGPSData({
+                latitude: sensorData.latitude,
+                longitude: sensorData.longitude,
+                altitude: sensorData.altitude || '0',
+                accuracy: sensorData.accuracy || '10',
+                speed: sensorData.speed || '0',
+                heading: sensorData.heading || '0',
+              });
+              
+              if (validation.isValid) {
+                await publishGPSData(walletClient, deviceAddress as Address, {
+                  timestamp: dataTimestamp,
+                  latitude: parseFloat(sensorData.latitude),
+                  longitude: parseFloat(sensorData.longitude),
+                  altitude: parseFloat(sensorData.altitude || '0'),
+                  accuracy: parseFloat(sensorData.accuracy || '10'),
+                  speed: parseFloat(sensorData.speed || '0'),
+                  heading: parseFloat(sensorData.heading || '0'),
+                });
+                dataPublished = true;
+              } else {
+                setSensorDataError(formatValidationErrors(validation.errors));
+                throw new Error('Invalid GPS data: ' + formatValidationErrors(validation.errors));
+              }
+              break;
+              
+            case DeviceType.WEATHER_STATION:
+              validation = validateWeatherData({
+                temperature: sensorData.temperature,
+                humidity: sensorData.humidity,
+                pressure: sensorData.pressure,
+                windSpeed: sensorData.windSpeed || '0',
+                windDirection: sensorData.windDirection || '0',
+                rainfall: sensorData.rainfall || '0',
+              });
+              
+              if (validation.isValid) {
+                await publishWeatherData(walletClient, deviceAddress as Address, {
+                  timestamp: dataTimestamp,
+                  temperature: parseFloat(sensorData.temperature),
+                  humidity: parseFloat(sensorData.humidity),
+                  pressure: parseFloat(sensorData.pressure),
+                  windSpeed: parseFloat(sensorData.windSpeed || '0'),
+                  windDirection: parseInt(sensorData.windDirection || '0'),
+                  rainfall: parseFloat(sensorData.rainfall || '0'),
+                });
+                dataPublished = true;
+              } else {
+                setSensorDataError(formatValidationErrors(validation.errors));
+                throw new Error('Invalid weather data: ' + formatValidationErrors(validation.errors));
+              }
+              break;
+              
+            case DeviceType.AIR_QUALITY_MONITOR:
+              validation = validateAirQualityData({
+                pm25: sensorData.pm25,
+                pm10: sensorData.pm10,
+                co2: sensorData.co2,
+                no2: sensorData.no2,
+                o3: sensorData.o3,
+                aqi: sensorData.aqi,
+              });
+              
+              if (validation.isValid) {
+                await publishAirQualityData(walletClient, deviceAddress as Address, {
+                  timestamp: dataTimestamp,
+                  pm25: parseInt(sensorData.pm25),
+                  pm10: parseInt(sensorData.pm10),
+                  co2: parseInt(sensorData.co2),
+                  no2: parseInt(sensorData.no2),
+                  o3: parseInt(sensorData.o3),
+                  aqi: parseInt(sensorData.aqi),
+                });
+                dataPublished = true;
+              } else {
+                setSensorDataError(formatValidationErrors(validation.errors));
+                throw new Error('Invalid air quality data: ' + formatValidationErrors(validation.errors));
+              }
+              break;
+          }
+        } catch (sensorError: any) {
+          // If sensor data validation fails or publish fails, fail the entire registration
+          // User can uncheck "Include sensor data" to skip this
+          throw sensorError;
         }
-      } catch (sampleDataError) {
-        // Don't fail registration if sample data publish fails
-        // This is optional and just helps with testing
-        console.warn('Failed to publish sample data (this is optional):', sampleDataError);
       }
 
       // Use device address for consistent ID format (matches registry)
@@ -224,7 +304,7 @@ export default function RegisterPage() {
         status: DeviceStatus.ONLINE,
         qualityScore: 0,
         location: formData.location,
-          totalDataPoints: 1, // Initial sample data was published
+          totalDataPoints: dataPublished ? 1 : 0,
         totalEarnings: 0,
         totalEarningsUsd: 0,
         activeSubscribers: 0,
@@ -260,7 +340,15 @@ export default function RegisterPage() {
       console.error('Error registering device:', err);
       const appError = parseError(err);
       const errorMessage = appError.details || appError.message || 'Failed to register device on blockchain';
-      setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
+      
+      // Check if it's a sensor data error
+      if (err.message?.includes('Invalid') || err.message?.includes('sensor')) {
+        setSensorDataError(errorMessage);
+        setError(null);
+      } else {
+        setError(`${getUserFriendlyMessage(appError)}: ${errorMessage}`);
+        setSensorDataError(null);
+      }
     } finally {
       setIsRegistering(false);
     }
@@ -473,6 +561,250 @@ export default function RegisterPage() {
                 <p className="body-sm text-gray-600">How long purchasers can access data after each payment.</p>
               </div>
 
+              <Separator />
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <label htmlFor="include-sensor-data" className="body-base font-medium">
+                      Publish Initial Sensor Data
+                    </label>
+                    <p className="body-sm text-gray-600">
+                      Include first sensor reading during registration (recommended)
+                    </p>
+                  </div>
+                  <Switch
+                    id="include-sensor-data"
+                    checked={includeSensorData}
+                    onCheckedChange={setIncludeSensorData}
+                  />
+                </div>
+
+                {includeSensorData && formData.type && (
+                  <div className="space-y-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    {formData.type === DeviceType.GPS_TRACKER && (
+                      <>
+                        <h3 className="body-base font-semibold mb-2">GPS Data</h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label htmlFor="latitude" className="body-base font-medium">Latitude *</label>
+                            <Input
+                              id="latitude"
+                              type="number"
+                              step="0.000001"
+                              placeholder="37.7749"
+                              value={sensorData.latitude}
+                              onChange={(e) => setSensorData({ ...sensorData, latitude: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="longitude" className="body-base font-medium">Longitude *</label>
+                            <Input
+                              id="longitude"
+                              type="number"
+                              step="0.000001"
+                              placeholder="-122.4194"
+                              value={sensorData.longitude}
+                              onChange={(e) => setSensorData({ ...sensorData, longitude: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="altitude">Altitude (m)</label>
+                            <Input
+                              id="altitude"
+                              type="number"
+                              placeholder="0"
+                              value={sensorData.altitude}
+                              onChange={(e) => setSensorData({ ...sensorData, altitude: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="accuracy">Accuracy (m)</label>
+                            <Input
+                              id="accuracy"
+                              type="number"
+                              placeholder="10"
+                              value={sensorData.accuracy}
+                              onChange={(e) => setSensorData({ ...sensorData, accuracy: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="speed">Speed (km/h)</label>
+                            <Input
+                              id="speed"
+                              type="number"
+                              placeholder="0"
+                              value={sensorData.speed}
+                              onChange={(e) => setSensorData({ ...sensorData, speed: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="heading">Heading (degrees)</label>
+                            <Input
+                              id="heading"
+                              type="number"
+                              placeholder="0"
+                              value={sensorData.heading}
+                              onChange={(e) => setSensorData({ ...sensorData, heading: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {formData.type === DeviceType.WEATHER_STATION && (
+                      <>
+                        <h3 className="body-base font-semibold mb-2">Weather Data</h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label htmlFor="temperature">Temperature (°F) *</label>
+                            <Input
+                              id="temperature"
+                              type="number"
+                              step="0.1"
+                              placeholder="72.5"
+                              value={sensorData.temperature}
+                              onChange={(e) => setSensorData({ ...sensorData, temperature: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="humidity">Humidity (%) *</label>
+                            <Input
+                              id="humidity"
+                              type="number"
+                              step="0.1"
+                              placeholder="65.0"
+                              value={sensorData.humidity}
+                              onChange={(e) => setSensorData({ ...sensorData, humidity: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="pressure">Pressure (hPa) *</label>
+                            <Input
+                              id="pressure"
+                              type="number"
+                              step="0.01"
+                              placeholder="1013.25"
+                              value={sensorData.pressure}
+                              onChange={(e) => setSensorData({ ...sensorData, pressure: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="windSpeed">Wind Speed (mph)</label>
+                            <Input
+                              id="windSpeed"
+                              type="number"
+                              step="0.1"
+                              placeholder="5.0"
+                              value={sensorData.windSpeed}
+                              onChange={(e) => setSensorData({ ...sensorData, windSpeed: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="windDirection">Wind Direction (degrees)</label>
+                            <Input
+                              id="windDirection"
+                              type="number"
+                              placeholder="180"
+                              value={sensorData.windDirection}
+                              onChange={(e) => setSensorData({ ...sensorData, windDirection: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="rainfall">Rainfall (inches/hour)</label>
+                            <Input
+                              id="rainfall"
+                              type="number"
+                              step="0.1"
+                              placeholder="0.0"
+                              value={sensorData.rainfall}
+                              onChange={(e) => setSensorData({ ...sensorData, rainfall: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
+
+                    {formData.type === DeviceType.AIR_QUALITY_MONITOR && (
+                      <>
+                        <h3 className="body-base font-semibold mb-2">Air Quality Data</h3>
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <label htmlFor="pm25">PM2.5 (μg/m³) *</label>
+                            <Input
+                              id="pm25"
+                              type="number"
+                              placeholder="15"
+                              value={sensorData.pm25}
+                              onChange={(e) => setSensorData({ ...sensorData, pm25: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="pm10">PM10 (μg/m³) *</label>
+                            <Input
+                              id="pm10"
+                              type="number"
+                              placeholder="25"
+                              value={sensorData.pm10}
+                              onChange={(e) => setSensorData({ ...sensorData, pm10: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="co2">CO₂ (ppm) *</label>
+                            <Input
+                              id="co2"
+                              type="number"
+                              placeholder="400"
+                              value={sensorData.co2}
+                              onChange={(e) => setSensorData({ ...sensorData, co2: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="no2">NO₂ (ppb) *</label>
+                            <Input
+                              id="no2"
+                              type="number"
+                              placeholder="20"
+                              value={sensorData.no2}
+                              onChange={(e) => setSensorData({ ...sensorData, no2: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="o3">O₃ (ppb) *</label>
+                            <Input
+                              id="o3"
+                              type="number"
+                              placeholder="50"
+                              value={sensorData.o3}
+                              onChange={(e) => setSensorData({ ...sensorData, o3: e.target.value })}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label htmlFor="aqi">AQI *</label>
+                            <Input
+                              id="aqi"
+                              type="number"
+                              placeholder="45"
+                              value={sensorData.aqi}
+                              onChange={(e) => setSensorData({ ...sensorData, aqi: e.target.value })}
+                            />
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {sensorDataError && includeSensorData && (
+                <Alert className="bg-red-50 border-red-200">
+                  <Info className="h-4 w-4 text-red-600" />
+                  <AlertDescription className="text-red-700">
+                    {sensorDataError}
+                  </AlertDescription>
+                </Alert>
+              )}
+
               {error && (
                 <Alert className="bg-red-50 border-red-200">
                   <Info className="h-4 w-4 text-red-600" />
@@ -491,7 +823,10 @@ export default function RegisterPage() {
                   !formData.type ||
                   !formData.location ||
                   !formData.price ||
-                  isRegistering
+                  isRegistering ||
+                  (includeSensorData && formData.type === DeviceType.GPS_TRACKER && (!sensorData.latitude || !sensorData.longitude)) ||
+                  (includeSensorData && formData.type === DeviceType.WEATHER_STATION && (!sensorData.temperature || !sensorData.humidity || !sensorData.pressure)) ||
+                  (includeSensorData && formData.type === DeviceType.AIR_QUALITY_MONITOR && (!sensorData.pm25 || !sensorData.pm10 || !sensorData.co2 || !sensorData.no2 || !sensorData.o3 || !sensorData.aqi))
                 }
                 className="w-full gradient-primary"
                 size="lg"
@@ -499,7 +834,7 @@ export default function RegisterPage() {
                 {isRegistering ? (
                   <>
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Registering on Blockchain...
+                    Registering & Publishing Data...
                   </>
                 ) : (
                   'Complete Registration'

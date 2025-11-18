@@ -17,6 +17,7 @@ import { formatAddress, formatEthAmount, formatUsdAmount, formatDateTime, format
 import { mockQuery } from '@/lib/mockData';
 import { SubscriptionDuration, DeviceType, DeviceStatus } from '@/lib/enums';
 import type { MarketplaceDevice } from '@/lib/types';
+import type { Address } from 'viem';
 
 export default function DevicePreviewPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
