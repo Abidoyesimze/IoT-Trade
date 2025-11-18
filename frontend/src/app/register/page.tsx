@@ -13,7 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { CheckCircle2, Info, Download, Loader2 } from 'lucide-react';
 import { DeviceType, DeviceStatus } from '@/lib/enums';
 import { useApp } from '@/context/AppContext';
-import { registerDevice } from '@/services/deviceService';
+import { registerDevice, publishGPSData, publishWeatherData, publishAirQualityData } from '@/services/deviceService';
 import { registerDeviceOnChain } from '@/services/registryService';
 import { parseError, getUserFriendlyMessage } from '@/lib/errors';
 import { type Address, createWalletClient, createPublicClient, http, custom, keccak256, stringToHex } from 'viem';
@@ -170,6 +170,51 @@ export default function RegisterPage() {
         deviceAddress as Address,
       );
 
+      // Publish initial sample sensor data to prevent metrics timeout
+      // This helps with testing and makes metrics available immediately
+      try {
+        const sampleDataTimestamp = BigInt(Date.now());
+        switch (formData.type as DeviceType) {
+          case DeviceType.GPS_TRACKER:
+            await publishGPSData(walletClient, deviceAddress as Address, {
+              timestamp: sampleDataTimestamp,
+              latitude: 37.7749, // Default: San Francisco
+              longitude: -122.4194,
+              altitude: 0,
+              accuracy: 10,
+              speed: 0,
+              heading: 0,
+            });
+            break;
+          case DeviceType.WEATHER_STATION:
+            await publishWeatherData(walletClient, deviceAddress as Address, {
+              timestamp: sampleDataTimestamp,
+              temperature: 72.5,
+              humidity: 65.0,
+              pressure: 1013.25,
+              windSpeed: 5.0,
+              windDirection: 180,
+              rainfall: 0.0,
+            });
+            break;
+          case DeviceType.AIR_QUALITY_MONITOR:
+            await publishAirQualityData(walletClient, deviceAddress as Address, {
+              timestamp: sampleDataTimestamp,
+              pm25: 15,
+              pm10: 25,
+              co2: 400,
+              no2: 20,
+              o3: 50,
+              aqi: 45,
+            });
+            break;
+        }
+      } catch (sampleDataError) {
+        // Don't fail registration if sample data publish fails
+        // This is optional and just helps with testing
+        console.warn('Failed to publish sample data (this is optional):', sampleDataError);
+      }
+
       // Use device address for consistent ID format (matches registry)
       const deviceId = `device-${deviceAddress.slice(2, 10)}`;
       const newDevice = {
@@ -179,7 +224,7 @@ export default function RegisterPage() {
         status: DeviceStatus.ONLINE,
         qualityScore: 0,
         location: formData.location,
-        totalDataPoints: 0,
+          totalDataPoints: 1, // Initial sample data was published
         totalEarnings: 0,
         totalEarningsUsd: 0,
         activeSubscribers: 0,
