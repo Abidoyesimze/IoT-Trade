@@ -562,31 +562,34 @@ export default function RegisterPage() {
               </Alert>
 
               <div className="space-y-2">
-                <label className="body-base font-medium">Device Serial Number</label>
+                <label className="body-base font-medium">Device Serial Number *</label>
                 <Input
                   placeholder="SN-ABC123XYZ"
                   value={serialNumber}
                   onChange={(e) => setSerialNumber(e.target.value)}
                   className="text-lg"
+                  required
                 />
                 {deviceAddress && (
                   <p className="body-sm text-gray-600">
                     Derived Device Address: <span className="font-mono">{deviceAddress.slice(0, 10)}...{deviceAddress.slice(-8)}</span>
                   </p>
                 )}
+                <p className="text-xs text-gray-500">Required. Used to generate unique device address</p>
               </div>
 
               <div className="space-y-2">
-                <label className="body-base font-medium">Device Name</label>
+                <label className="body-base font-medium">Device Name *</label>
                 <Input
                   placeholder="My GPS Tracker"
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                  required
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="body-base font-medium">Device Type</label>
+                <label className="body-base font-medium">Device Type *</label>
                 <Select value={formData.type} onValueChange={(value) => setFormData({ ...formData, type: value })}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select device type" />
