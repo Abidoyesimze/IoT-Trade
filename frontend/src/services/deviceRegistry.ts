@@ -7,6 +7,7 @@
 import type { Address } from 'viem';
 import { readDeviceMetadata, calculateDeviceMetrics } from './deviceService';
 import type { UserDevice, MarketplaceDevice } from '@/lib/types';
+import type { RegistryDevice } from './registryService';
 import { DeviceStatus, DeviceType } from '@/lib/enums';
 
 /**
@@ -116,12 +117,36 @@ export async function discoverMarketplaceDevices(
       return [];
     }
     
-    // Convert RegistryDevice to MarketplaceDevice format with real metrics
-    const devices: MarketplaceDevice[] = [];
+    const activeDevices = registryDevices.filter(d => d.isActive).slice(0, limit);
     
-    for (const device of registryDevices.filter(d => d.isActive).slice(0, limit)) {
+    const buildFallbackDevice = (device: RegistryDevice): MarketplaceDevice => {
+      const now = Date.now();
+      const registeredAtMs = device.registeredAt;
+      const daysSinceRegistration = Math.floor((now - registeredAtMs) / (1000 * 60 * 60 * 24));
+      const uptimePercentage = daysSinceRegistration === 0 
+        ? 100 
+        : Math.max(0, 100 - (daysSinceRegistration * 5));
+
+      return {
+        id: `device-${device.address.slice(2, 10)}`,
+        name: device.name,
+        type: device.deviceType as DeviceType,
+        status: device.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
+        qualityScore: 0,
+        location: device.location,
+        pricePerDataPoint: device.pricePerDataPoint,
+        subscribers: 0,
+        owner: device.owner,
+        deviceAddress: device.address,
+        ownerAddress: device.owner,
+        updateFrequency: 'N/A',
+        uptime: Math.round(uptimePercentage * 10) / 10,
+      };
+    };
+
+    const devicePromises = activeDevices.map(async (device) => {
       try {
-        // Calculate real metrics from Somnia Data Streams
+        // Calculate real metrics from Somnia Data Streams with shorter timeout
         // Wrap in timeout to prevent hanging if device has no data
         const metricsPromise = calculateDeviceMetrics(
           device.owner,
@@ -131,88 +156,47 @@ export async function discoverMarketplaceDevices(
         );
         
         const timeoutPromise = new Promise<null>((_, reject) => 
-          setTimeout(() => reject(new Error('Metrics calculation timeout')), 3000)
+          setTimeout(() => reject(new Error('Metrics calculation timeout')), 1500)
         );
         
         const metrics = await Promise.race([
           metricsPromise,
           timeoutPromise,
         ]).catch((error) => {
-          // If metrics calculation fails, return fallback
-          console.warn(`Metrics calculation failed for device ${device.address}:`, error?.message || error);
+          // Silently return null for timeouts - expected when device has no data
           return null;
         });
 
         if (!metrics) {
-          // Use fallback metrics if calculation failed
-          const now = Date.now();
-          const registeredAtMs = device.registeredAt;
-          const daysSinceRegistration = Math.floor((now - registeredAtMs) / (1000 * 60 * 60 * 24));
-          const uptimePercentage = daysSinceRegistration === 0 
-            ? 100 
-            : Math.max(0, 100 - (daysSinceRegistration * 5));
-          
-          devices.push({
-            id: `device-${device.address.slice(2, 10)}`,
-            name: device.name,
-            type: device.deviceType as DeviceType,
-            status: device.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
-            qualityScore: 0,
-            location: device.location,
-            pricePerDataPoint: device.pricePerDataPoint,
-            subscribers: 0,
-            owner: device.owner,
-            deviceAddress: device.address,
-            ownerAddress: device.owner,
-            updateFrequency: 'N/A',
-            uptime: Math.round(uptimePercentage * 10) / 10,
-          });
-        } else {
-          devices.push({
-            id: `device-${device.address.slice(2, 10)}`,
-            name: device.name,
-            type: device.deviceType as DeviceType,
-            status: metrics.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
-            qualityScore: 0, // Could calculate from data quality metrics in the future
-            location: device.location,
-            pricePerDataPoint: device.pricePerDataPoint,
-            subscribers: 0, // Would need to track from purchase events or subgraph
-            owner: device.owner,
-            deviceAddress: device.address,
-            ownerAddress: device.owner,
-            updateFrequency: metrics.updateFrequency,
-            uptime: metrics.uptime,
-          });
+          return buildFallbackDevice(device);
         }
-      } catch (error) {
-        // Silently continue - use fallback metrics
-        console.warn(`Error processing device ${device.address}:`, error);
-        // Fallback to basic metrics if calculation fails
-        const now = Date.now();
-        const registeredAtMs = device.registeredAt;
-        const daysSinceRegistration = Math.floor((now - registeredAtMs) / (1000 * 60 * 60 * 24));
-        const uptimePercentage = daysSinceRegistration === 0 
-          ? 100 
-          : Math.max(0, 100 - (daysSinceRegistration * 5));
-        
-        devices.push({
+
+        return {
           id: `device-${device.address.slice(2, 10)}`,
           name: device.name,
           type: device.deviceType as DeviceType,
-          status: device.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
-          qualityScore: 0,
+          status: metrics.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
+          qualityScore: 0, // Could calculate from data quality metrics in the future
           location: device.location,
           pricePerDataPoint: device.pricePerDataPoint,
-          subscribers: 0,
+          subscribers: 0, // Would need to track from purchase events or subgraph
           owner: device.owner,
           deviceAddress: device.address,
           ownerAddress: device.owner,
-          updateFrequency: 'N/A',
-          uptime: Math.round(uptimePercentage * 10) / 10,
-        });
+          updateFrequency: metrics.updateFrequency,
+          uptime: metrics.uptime,
+        };
+      } catch (error) {
+        // Silently fallback to basic device info
+        return buildFallbackDevice(device);
       }
-    }
+    });
     
+    // Use allSettled so slow/failing devices don't block others
+    const results = await Promise.allSettled(devicePromises);
+    const devices = results
+      .map((result) => result.status === 'fulfilled' ? result.value : null)
+      .filter((device): device is MarketplaceDevice => device !== null);
     return devices;
   } catch (error) {
     console.error('Error discovering marketplace devices:', error);
