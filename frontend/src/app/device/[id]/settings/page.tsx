@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAccount } from 'wagmi';
 import Header from '@/components/Header';
@@ -14,27 +14,106 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { AlertTriangle, Save, Send, Loader2, CheckCircle2, Info, HelpCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { useApp } from '@/context/AppContext';
-import { DeviceType } from '@/lib/enums';
+import { DeviceType, DeviceStatus } from '@/lib/enums';
 import { formatDateTime } from '@/lib/formatters';
 import { publishGPSData, publishWeatherData, publishAirQualityData } from '@/services/deviceService';
 import { validateGPSData, validateWeatherData, validateAirQualityData, validateWalletConnection, formatValidationErrors } from '@/lib/validation';
 import { parseError, getUserFriendlyMessage, isRecoverableError } from '@/lib/errors';
 import type { Address } from 'viem';
+import type { UserDevice } from '@/lib/types';
 import { createWalletClient, custom } from 'viem';
 import { somniaTestnet } from '@/config/wagmi';
 
-export default function DeviceSettingsPage({ params }: { params: { id: string } }) {
+export default function DeviceSettingsPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params);
   const router = useRouter();
   const { address } = useAccount();
-  const { userDevices, updateUserDevice, deleteUserDevice } = useApp();
-  const device = userDevices.find(d => d.id === params.id);
+  const { userDevices, updateUserDevice, deleteUserDevice, refreshUserDevices } = useApp();
+  const [device, setDevice] = useState<UserDevice | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const [formData, setFormData] = useState({
-    name: device?.name || '',
-    location: device?.location || '',
-    price: device?.pricePerDataPoint.toString() || ''
+    name: '',
+    location: '',
+    price: ''
   });
-  const [isPublishing, setIsPublishing] = useState(device?.status === 'ONLINE');
+  const [isPublishing, setIsPublishing] = useState(false);
+
+  // Load device on mount
+  useEffect(() => {
+    const loadDevice = async () => {
+      setIsLoading(true);
+      setError(null);
+
+      try {
+        // First try to find in userDevices from context
+        let foundDevice = userDevices.find(d => d.id === id);
+        
+        // If not found, try loading directly from registry
+        if (!foundDevice && address) {
+            const { fetchDevicesByOwner } = await import('@/services/registryService');
+            const { calculateDeviceMetrics } = await import('@/services/deviceService');
+            const registryDevices = await fetchDevicesByOwner(address);
+            
+            // Find device by matching ID
+            const registryDevice = registryDevices.find(d => {
+              const deviceId = `device-${d.address.slice(2, 10)}`;
+              return deviceId === id;
+            });
+            
+            if (registryDevice) {
+              const metrics = await calculateDeviceMetrics(
+                registryDevice.owner,
+                registryDevice.address as Address,
+                registryDevice.deviceType as DeviceType,
+                registryDevice.registeredAt
+              );
+              
+              foundDevice = {
+                id: `device-${registryDevice.address.slice(2, 10)}`,
+                name: registryDevice.name,
+                type: registryDevice.deviceType as DeviceType,
+                status: metrics.isActive ? DeviceStatus.ONLINE : DeviceStatus.OFFLINE,
+                qualityScore: 0,
+                location: registryDevice.location,
+                totalDataPoints: 0,
+                totalEarnings: 0,
+                totalEarningsUsd: 0,
+                activeSubscribers: 0,
+                deviceAddress: registryDevice.address,
+                ownerAddress: registryDevice.owner,
+                pricePerDataPoint: registryDevice.pricePerDataPoint,
+                updateFrequency: metrics.updateFrequency,
+                uptime: metrics.uptime,
+                lastPublished: metrics.lastPublished || new Date(registryDevice.registeredAt),
+              };
+            }
+          }
+        }
+        
+        if (foundDevice) {
+          setDevice(foundDevice);
+          setFormData({
+            name: foundDevice.name,
+            location: foundDevice.location,
+            price: foundDevice.pricePerDataPoint.toString()
+          });
+          setIsPublishing(foundDevice.status === DeviceStatus.ONLINE);
+        } else {
+          setError('Device not found');
+        }
+      } catch (err) {
+        console.error('Error loading device:', err);
+        setError('Failed to load device');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadDevice();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, address]);
   
   // Data publishing state
   const [publishDataTab, setPublishDataTab] = useState<'manual' | 'auto'>('manual');
@@ -116,13 +195,30 @@ export default function DeviceSettingsPage({ params }: { params: { id: string } 
     });
   };
 
-  if (!device) {
+  if (isLoading) {
     return (
       <>
         <Header />
         <main className="min-h-screen pt-24 pb-12 px-6">
-          <div className="max-w-4xl mx-auto text-center">
-            <p className="body-lg text-gray-600">Device not found</p>
+          <div className="max-w-4xl mx-auto text-center py-12">
+            <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4 text-primary-blue" />
+            <p className="body-lg text-gray-600">Loading device settings...</p>
+          </div>
+        </main>
+      </>
+    );
+  }
+
+  if (error || !device) {
+    return (
+      <>
+        <Header />
+        <main className="min-h-screen pt-24 pb-12 px-6">
+          <div className="max-w-4xl mx-auto text-center py-12">
+            <p className="body-lg text-gray-600 mb-4">{error || 'Device not found'}</p>
+            <Button onClick={() => router.push('/dashboard')} variant="outline">
+              Back to Dashboard
+            </Button>
           </div>
         </main>
       </>
