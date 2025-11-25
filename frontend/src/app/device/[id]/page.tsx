@@ -2,6 +2,9 @@
 
 import { useState, useEffect, use } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useAccount } from 'wagmi';
+import { createWalletClient, custom, createPublicClient, http } from 'viem';
+import { somniaTestnet } from '@/config/wagmi';
 import Header from '@/components/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -18,18 +21,65 @@ import { mockQuery } from '@/lib/mockData';
 import { SubscriptionDuration, DeviceType, DeviceStatus } from '@/lib/enums';
 import type { MarketplaceDevice } from '@/lib/types';
 import type { Address } from 'viem';
+import { purchaseDeviceAccess, getAccessExpiry, getDeviceInfo } from '@/services/registryService';
 
 export default function DevicePreviewPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { marketplaceDevices, addUserSubscription, refreshMarketplaceDevices } = useApp();
+  const { address, isConnected } = useAccount();
+  const { marketplaceDevices, addUserSubscription, refreshMarketplaceDevices, refreshUserSubscriptions } = useApp();
   const [selectedDuration, setSelectedDuration] = useState(SubscriptionDuration.SEVEN_DAYS);
   const [device, setDevice] = useState<MarketplaceDevice | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isPurchasing, setIsPurchasing] = useState(false);
   
   const defaultTab = searchParams.get('tab') || 'preview';
+  
+  const getWalletClient = async () => {
+    if (!address) {
+      throw new Error('Wallet not connected');
+    }
+    if (typeof window === 'undefined' || !(window as any).ethereum) {
+      throw new Error('Wallet not available');
+    }
+
+    const provider = (window as any).ethereum;
+    const CHAIN_ID_HEX = '0xc488';
+    
+    try {
+      await provider.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: CHAIN_ID_HEX }],
+      });
+    } catch (switchError: any) {
+      if (switchError.code === 4902) {
+        await provider.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: CHAIN_ID_HEX,
+            chainName: 'Somnia Testnet',
+            rpcUrls: ['https://dream-rpc.somnia.network'],
+            nativeCurrency: {
+              name: 'Somnia Testnet Token',
+              symbol: 'STT',
+              decimals: 18,
+            },
+            blockExplorerUrls: ['https://shannon-explorer.somnia.network'],
+          }],
+        });
+      } else {
+        throw switchError;
+      }
+    }
+
+    return createWalletClient({
+      account: address as Address,
+      chain: somniaTestnet,
+      transport: custom(provider),
+    });
+  };
 
   useEffect(() => {
     const loadDevice = async () => {
@@ -79,6 +129,7 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
                 qualityScore: 0,
                 location: registryDevice.location,
                 pricePerDataPoint: registryDevice.pricePerDataPoint,
+                subscriptionDuration: registryDevice.subscriptionDuration,
                 subscribers: 0,
                 owner: registryDevice.owner,
                 deviceAddress: registryDevice.address,
@@ -87,6 +138,15 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
                 uptime: metrics.uptime,
               };
             }
+          }
+        } else if (!foundDevice.subscriptionDuration && foundDevice.deviceAddress) {
+          // If found in marketplace but missing subscriptionDuration, load it from registry
+          const deviceInfo = await getDeviceInfo(foundDevice.deviceAddress as Address);
+          if (deviceInfo) {
+            foundDevice = {
+              ...foundDevice,
+              subscriptionDuration: deviceInfo.subscriptionDuration,
+            };
           }
         }
         
@@ -137,31 +197,92 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
     );
   }
 
-  const handleSubscribe = () => {
-    const pricing = selectedDuration === SubscriptionDuration.ONE_DAY ? mockQuery.subscriptionPricing.oneDay :
-                    selectedDuration === SubscriptionDuration.SEVEN_DAYS ? mockQuery.subscriptionPricing.sevenDays :
-                    mockQuery.subscriptionPricing.thirtyDays;
+  const handleSubscribe = async () => {
+    if (!isConnected || !address) {
+      setError('Please connect your wallet to subscribe');
+      return;
+    }
 
-    const days = selectedDuration === SubscriptionDuration.ONE_DAY ? 1 :
-                 selectedDuration === SubscriptionDuration.SEVEN_DAYS ? 7 : 30;
+    if (!device || !device.deviceAddress) {
+      setError('Device information is missing');
+      return;
+    }
 
-    const newSubscription = {
-      id: `sub-${Date.now()}`,
-      deviceId: device.id,
-      deviceName: device.name,
-      deviceType: device.type,
-      deviceOwner: device.owner,
-      status: 'Active' as const,
-      startDate: new Date(),
-      endDate: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
-      daysRemaining: days,
-      remainingBalance: pricing.priceEth,
-      dataPointsConsumed: 0,
-      autoRenewal: false
-    };
+    setIsPurchasing(true);
+    setError(null);
 
-    addUserSubscription(newSubscription);
-    router.push(`/stream/${device.id}`);
+    try {
+      // Get wallet client
+      const walletClient = await getWalletClient();
+      const deviceAddress = device.deviceAddress as Address;
+
+      // Get device info from registry to get subscriptionDuration
+      const deviceInfo = await getDeviceInfo(deviceAddress);
+      if (!deviceInfo) {
+        throw new Error('Failed to load device information from blockchain');
+      }
+
+      // Calculate payment - use device's pricePerDataPoint
+      // For now, one purchase = one subscription period
+      // The contract will extend the expiry if user already has an active subscription
+      const priceWei = BigInt(Math.round(deviceInfo.pricePerDataPoint * 1e18));
+
+      // Purchase access on-chain
+      const txHash = await purchaseDeviceAccess(
+        walletClient,
+        deviceAddress,
+        priceWei
+      );
+
+      // Wait for transaction confirmation
+      const publicClient = createPublicClient({
+        chain: somniaTestnet,
+        transport: http(somniaTestnet.rpcUrls.default.http[0]),
+      });
+
+      await publicClient.waitForTransactionReceipt({
+        hash: txHash,
+      });
+
+      // Get access expiry from blockchain
+      const expiryTimestamp = await getAccessExpiry(address, deviceAddress);
+      const now = Date.now();
+      
+      if (expiryTimestamp <= now) {
+        throw new Error('Subscription purchase failed - no access granted');
+      }
+
+      // Calculate days remaining
+      const daysRemaining = Math.ceil((expiryTimestamp - now) / (1000 * 60 * 60 * 24));
+      
+      // Create subscription from blockchain data
+      const newSubscription = {
+        id: `sub-${device.id}-${now}`,
+        deviceId: device.id,
+        deviceName: device.name,
+        deviceType: device.type,
+        deviceOwner: device.owner,
+        status: 'Active' as const,
+        startDate: new Date(now),
+        endDate: new Date(expiryTimestamp),
+        daysRemaining,
+        remainingBalance: deviceInfo.pricePerDataPoint,
+        dataPointsConsumed: 0,
+        autoRenewal: false
+      };
+
+      addUserSubscription(newSubscription);
+      
+      // Refresh subscriptions to ensure UI is up to date with blockchain data
+      await refreshUserSubscriptions();
+      
+      // Navigate to stream page
+      router.push(`/stream/${device.id}`);
+    } catch (err: any) {
+      console.error('Error purchasing subscription:', err);
+      setError(err?.message || 'Failed to purchase subscription. Please try again.');
+      setIsPurchasing(false);
+    }
   };
 
   const getPricing = () => {
@@ -288,82 +409,69 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
             <TabsContent value="subscribe" className="space-y-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>Choose Subscription Duration</CardTitle>
+                  <CardTitle>Subscribe to Device</CardTitle>
+                  <p className="body-sm text-gray-600 mt-2">
+                    Purchase access to stream live data from this device. 
+                    {device.subscriptionDuration && (
+                      <> Each purchase grants access for {Math.floor(device.subscriptionDuration / 86400)} day{Math.floor(device.subscriptionDuration / 86400) !== 1 ? 's' : ''}.</>
+                    )}
+                  </p>
                 </CardHeader>
                 <CardContent>
-                  <RadioGroup value={selectedDuration} onValueChange={(value) => setSelectedDuration(value as SubscriptionDuration)}>
-                    <div className="space-y-3">
-                      {/* 1 Day */}
-                      <label className={`flex items-center justify-between p-4 border-2 rounded-lg cursor-pointer transition-all ${selectedDuration === SubscriptionDuration.ONE_DAY ? 'border-primary-blue bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                        <div className="flex items-center gap-3">
-                          <RadioGroupItem value={SubscriptionDuration.ONE_DAY} />
-                          <div>
-                            <p className="body-base font-semibold">1 Day</p>
-                            <p className="body-sm text-gray-600">~{mockQuery.subscriptionPricing.oneDay.estimatedDataPoints.toLocaleString()} data points</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="body-base font-semibold">{formatEthAmount(mockQuery.subscriptionPricing.oneDay.priceEth)}</p>
-                          <p className="body-sm text-gray-600">{formatUsdAmount(mockQuery.subscriptionPricing.oneDay.priceUsd)}</p>
-                        </div>
-                      </label>
-
-                      {/* 7 Days */}
-                      <label className={`flex items-center justify-between p-4 border-2 rounded-lg cursor-pointer transition-all ${selectedDuration === SubscriptionDuration.SEVEN_DAYS ? 'border-primary-blue bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                        <div className="flex items-center gap-3">
-                          <RadioGroupItem value={SubscriptionDuration.SEVEN_DAYS} />
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="body-base font-semibold">7 Days</p>
-                              <Badge className="bg-primary-blue text-white">Most Popular</Badge>
-                            </div>
-                            <p className="body-sm text-gray-600">~{mockQuery.subscriptionPricing.sevenDays.estimatedDataPoints.toLocaleString()} data points</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="body-base font-semibold">{formatEthAmount(mockQuery.subscriptionPricing.sevenDays.priceEth)}</p>
-                          <p className="body-sm text-gray-600">{formatUsdAmount(mockQuery.subscriptionPricing.sevenDays.priceUsd)}</p>
-                        </div>
-                      </label>
-
-                      {/* 30 Days */}
-                      <label className={`flex items-center justify-between p-4 border-2 rounded-lg cursor-pointer transition-all ${selectedDuration === SubscriptionDuration.THIRTY_DAYS ? 'border-primary-blue bg-blue-50' : 'border-gray-200 hover:border-gray-300'}`}>
-                        <div className="flex items-center gap-3">
-                          <RadioGroupItem value={SubscriptionDuration.THIRTY_DAYS} />
-                          <div>
-                            <div className="flex items-center gap-2">
-                              <p className="body-base font-semibold">30 Days</p>
-                              <Badge className="bg-success-green text-white">Best Value</Badge>
-                            </div>
-                            <p className="body-sm text-gray-600">~{mockQuery.subscriptionPricing.thirtyDays.estimatedDataPoints.toLocaleString()} data points</p>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <p className="body-base font-semibold">{formatEthAmount(mockQuery.subscriptionPricing.thirtyDays.priceEth)}</p>
-                          <p className="body-sm text-gray-600">{formatUsdAmount(mockQuery.subscriptionPricing.thirtyDays.priceUsd)}</p>
-                        </div>
-                      </label>
-                    </div>
-                  </RadioGroup>
-
-                  {/* Total Cost */}
-                  <div className="mt-6 p-4 bg-gray-50 rounded-lg">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="body-base text-gray-600">Estimated Data Points</p>
-                      <p className="body-base font-semibold">{pricing.estimatedDataPoints.toLocaleString()}</p>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <p className="body-lg font-semibold">Total Cost</p>
-                      <div className="text-right">
-                        <p className="heading-md text-primary-blue">{formatEthAmount(pricing.priceEth)}</p>
-                        <p className="body-sm text-gray-600">{formatUsdAmount(pricing.priceUsd)}</p>
+                  {/* Subscription Info */}
+                  <div className="p-6 bg-blue-50 rounded-lg border-2 border-primary-blue mb-6">
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <p className="body-base text-gray-700">Subscription Duration</p>
+                        <p className="body-base font-semibold text-primary-blue">
+                          {device.subscriptionDuration 
+                            ? `${Math.floor(device.subscriptionDuration / 86400)} day${Math.floor(device.subscriptionDuration / 86400) !== 1 ? 's' : ''}`
+                            : 'Loading...'}
+                        </p>
                       </div>
+                      <div className="flex items-center justify-between">
+                        <p className="body-base text-gray-700">Price</p>
+                        <div className="text-right">
+                          <p className="heading-md text-primary-blue">
+                            {formatEthAmount(device.pricePerDataPoint)}
+                          </p>
+                        </div>
+                      </div>
+                      {device.subscriptionDuration && (
+                        <div className="pt-3 border-t border-blue-200">
+                          <p className="text-xs text-gray-600">
+                            * Additional purchases will extend your subscription period from the current expiry date.
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </div>
 
-                  <Button onClick={handleSubscribe} className="w-full mt-6 gradient-primary" size="lg">
-                    Subscribe Now
+                  {error && (
+                    <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                      {error}
+                    </div>
+                  )}
+                  <Button 
+                    onClick={handleSubscribe} 
+                    className="w-full gradient-primary" 
+                    size="lg"
+                    disabled={isPurchasing || !isConnected || !device || !device.subscriptionDuration}
+                  >
+                    {isPurchasing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Processing Purchase...
+                      </>
+                    ) : (
+                      'Purchase Access'
+                    )}
                   </Button>
+                  {!isConnected && (
+                    <p className="text-sm text-gray-600 text-center mt-2">
+                      Please connect your wallet to subscribe
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             </TabsContent>
