@@ -25,10 +25,8 @@ export default function MarketplacePage() {
   const [qualityScore, setQualityScore] = useState([0]);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Refresh marketplace on mount
-  useEffect(() => {
-    refreshMarketplaceDevices();
-  }, [refreshMarketplaceDevices]);
+  // Note: Marketplace devices are already loaded by AppContext on mount
+  // Only refresh manually via the refresh button if needed
 
   const handleRefresh = async () => {
     setIsRefreshing(true);

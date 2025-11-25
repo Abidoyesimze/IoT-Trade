@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useAccount } from 'wagmi';
 import type { UserDevice, UserSubscription, MarketplaceDevice, DataPoint } from '@/lib/types';
 import { loadUserDevices, getUserDeviceAddresses, saveUserDeviceAddress, discoverMarketplaceDevices } from '@/services/deviceRegistry';
@@ -33,7 +33,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
 
   // Load user devices from blockchain when wallet is connected
-  const refreshUserDevices = async () => {
+  const refreshUserDevices = useCallback(async () => {
     if (!address || !isConnected) {
       setUserDevices([]);
       return;
@@ -55,10 +55,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } finally {
       setIsLoadingDevices(false);
     }
-  };
+  }, [address, isConnected]);
 
   // Load marketplace devices from blockchain
-  const refreshMarketplaceDevices = async () => {
+  const refreshMarketplaceDevices = useCallback(async () => {
     setIsLoadingDevices(true);
     try {
       const devices = await discoverMarketplaceDevices(50);
@@ -71,7 +71,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Always reset loading state, even if there's an error
       setIsLoadingDevices(false);
     }
-  };
+  }, []);
 
   // Load devices when wallet connects
   useEffect(() => {
