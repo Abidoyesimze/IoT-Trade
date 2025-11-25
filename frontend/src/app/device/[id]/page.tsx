@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Badge } from '@/components/ui/badge';
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import { CheckCircle2, Loader2, ArrowLeft } from 'lucide-react';
 import { DeviceIcon } from '@/components/shared/DeviceIcon';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { useApp } from '@/context/AppContext';
@@ -175,6 +175,16 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
       <Header />
       <main className="min-h-screen pt-24 pb-12 px-6">
         <div className="max-w-4xl mx-auto">
+          {/* Back Button */}
+          <Button
+            variant="ghost"
+            onClick={() => router.push('/marketplace')}
+            className="mb-4 -ml-2"
+          >
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Back to Marketplace
+          </Button>
+
           {/* Device Header */}
           <Card className="mb-6">
             <CardHeader>
