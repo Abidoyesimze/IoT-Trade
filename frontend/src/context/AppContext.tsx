@@ -1,9 +1,10 @@
 'use client';
 
-import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useAccount } from 'wagmi';
 import type { UserDevice, UserSubscription, MarketplaceDevice, DataPoint } from '@/lib/types';
-import { loadUserDevices, getUserDeviceAddresses, saveUserDeviceAddress, discoverMarketplaceDevices } from '@/services/deviceRegistry';
+import { loadUserDevicesFromRegistry, getUserDeviceAddresses, saveUserDeviceAddress, discoverMarketplaceDevices } from '@/services/deviceRegistry';
+import { loadUserSubscriptions } from '@/services/subscriptionService';
 import type { Address } from 'viem';
 
 interface AppContextType {
@@ -20,6 +21,7 @@ interface AppContextType {
   cancelUserSubscription: (subscriptionId: string) => void;
   refreshUserDevices: () => Promise<void>;
   refreshMarketplaceDevices: () => Promise<void>;
+  refreshUserSubscriptions: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -33,7 +35,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isLoadingDevices, setIsLoadingDevices] = useState(false);
 
   // Load user devices from blockchain when wallet is connected
-  const refreshUserDevices = async () => {
+  const refreshUserDevices = useCallback(async () => {
     if (!address || !isConnected) {
       setUserDevices([]);
       return;
@@ -41,45 +43,60 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     setIsLoadingDevices(true);
     try {
-      const deviceAddresses = getUserDeviceAddresses(address);
-      
-      if (deviceAddresses.length > 0) {
-        const devices = await loadUserDevices(address, deviceAddresses);
-        setUserDevices(devices);
-      } else {
-        setUserDevices([]);
-      }
+      // Load devices from on-chain registry (primary method)
+      const devices = await loadUserDevicesFromRegistry(address);
+      setUserDevices(devices);
     } catch (error) {
       console.error('Error loading user devices:', error);
       // Keep existing devices on error
+      setUserDevices([]);
     } finally {
       setIsLoadingDevices(false);
     }
-  };
+  }, [address, isConnected]);
 
   // Load marketplace devices from blockchain
-  const refreshMarketplaceDevices = async () => {
+  const refreshMarketplaceDevices = useCallback(async () => {
     setIsLoadingDevices(true);
     try {
       const devices = await discoverMarketplaceDevices(50);
-      setMarketplaceDevices(devices);
+      setMarketplaceDevices(devices || []);
     } catch (error) {
       console.error('Error loading marketplace devices:', error);
-      // Keep existing devices on error
+      // Set empty array on error to show empty state
+      setMarketplaceDevices([]);
     } finally {
+      // Always reset loading state, even if there's an error
       setIsLoadingDevices(false);
     }
-  };
+  }, []);
 
-  // Load devices when wallet connects
+  // Load user subscriptions from blockchain
+  const refreshUserSubscriptions = useCallback(async () => {
+    if (!address || !isConnected) {
+      setUserSubscriptions([]);
+      return;
+    }
+
+    try {
+      const subscriptions = await loadUserSubscriptions(address);
+      setUserSubscriptions(subscriptions);
+    } catch (error) {
+      console.error('Error loading user subscriptions:', error);
+      // Keep existing subscriptions on error
+    }
+  }, [address, isConnected]);
+
+  // Load devices and subscriptions when wallet connects
   useEffect(() => {
     if (isConnected && address) {
       refreshUserDevices();
+      refreshUserSubscriptions();
     } else {
       setUserDevices([]);
       setUserSubscriptions([]);
     }
-  }, [isConnected, address]);
+  }, [isConnected, address, refreshUserDevices, refreshUserSubscriptions]);
 
   // Load marketplace devices on mount
   useEffect(() => {
@@ -158,6 +175,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         cancelUserSubscription,
         refreshUserDevices,
         refreshMarketplaceDevices,
+        refreshUserSubscriptions,
       }}
     >
       {children}
