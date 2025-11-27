@@ -252,7 +252,14 @@ export async function readData(
   timeoutMs: number = 1500
 ): Promise<Hex | null> {
   const sdk = createSomniaSDKPublic();
-  const schemaId = await sdk.streams.computeSchemaId(schema);
+  const schemaIdResult = await sdk.streams.computeSchemaId(schema);
+  
+  // Handle case where SDK returns an Error
+  if (schemaIdResult instanceof Error) {
+    throw schemaIdResult;
+  }
+  
+  const schemaId = schemaIdResult as Hex;
   
   try {
     // Add timeout to prevent hanging when no data exists
@@ -261,7 +268,7 @@ export async function readData(
     );
     
     const dataPromise = sdk.streams.getByKey(schemaId, publisherAddress, dataId);
-    const data = await Promise.race([dataPromise, timeoutPromise]);
+    const data: unknown = await Promise.race([dataPromise, timeoutPromise]);
     
     // Validate and normalize the returned data
     if (!data) {
@@ -284,8 +291,11 @@ export async function readData(
     }
     
     // If data is bytes/ArrayBuffer, convert to hex
-    if (data instanceof Uint8Array || data instanceof ArrayBuffer) {
+    if (data instanceof Uint8Array) {
       return toHex(data);
+    }
+    if (data instanceof ArrayBuffer) {
+      return toHex(new Uint8Array(data));
     }
     
     // For other types, try to convert to hex if possible
@@ -343,7 +353,14 @@ export async function getAllDataForDevice(
   publisherAddress: Address
 ): Promise<Array<{ dataId: Hex; data: Hex; timestamp: bigint }>> {
   const sdk = createSomniaSDKPublic();
-  const schemaId = await sdk.streams.computeSchemaId(schema);
+  const schemaIdResult = await sdk.streams.computeSchemaId(schema);
+  
+  // Handle case where SDK returns an Error
+  if (schemaIdResult instanceof Error) {
+    throw schemaIdResult;
+  }
+  
+  const schemaId = schemaIdResult as Hex;
   
   // Note: This depends on SDK capabilities. If not available, we'll need to track dataIds separately
   // For now, returning empty array - we'll implement a registry pattern
