@@ -66,7 +66,14 @@ export async function createSomniaSDKWithWallet(walletClient: WalletClient) {
  */
 export async function computeSchemaId(schema: string): Promise<Hex> {
   const sdk = createSomniaSDKPublic();
-  return await sdk.streams.computeSchemaId(schema);
+  const result = await sdk.streams.computeSchemaId(schema);
+  
+  // Handle case where SDK returns an Error
+  if (result instanceof Error) {
+    throw result;
+  }
+  
+  return result as Hex;
 }
 
 /**
@@ -214,7 +221,14 @@ export async function publishData(
   encodedData: Hex
 ): Promise<Hex> {
   const sdk = await createSomniaSDKWithWallet(walletClient);
-  const schemaId = await sdk.streams.computeSchemaId(schema);
+  const schemaIdResult = await sdk.streams.computeSchemaId(schema);
+  
+  // Handle case where SDK returns an Error
+  if (schemaIdResult instanceof Error) {
+    throw schemaIdResult;
+  }
+  
+  const schemaId = schemaIdResult as Hex;
   
   const txHash = await sdk.streams.set([
     {

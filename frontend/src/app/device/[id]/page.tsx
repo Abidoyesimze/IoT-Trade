@@ -18,8 +18,8 @@ import { StatusBadge } from '@/components/shared/StatusBadge';
 import { useApp } from '@/context/AppContext';
 import { formatAddress, formatEthAmount, formatUsdAmount, formatDateTime, formatPercentage } from '@/lib/formatters';
 import { mockQuery } from '@/lib/mockData';
-import { SubscriptionDuration, DeviceType, DeviceStatus } from '@/lib/enums';
-import type { MarketplaceDevice } from '@/lib/types';
+import { SubscriptionDuration, DeviceType, DeviceStatus, SubscriptionStatus } from '@/lib/enums';
+import type { MarketplaceDevice, UserSubscription } from '@/lib/types';
 import type { Address } from 'viem';
 import { purchaseDeviceAccess, getAccessExpiry, getDeviceInfo } from '@/services/registryService';
 
@@ -256,13 +256,13 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
       const daysRemaining = Math.ceil((expiryTimestamp - now) / (1000 * 60 * 60 * 24));
       
       // Create subscription from blockchain data
-      const newSubscription = {
+      const newSubscription: UserSubscription = {
         id: `sub-${device.id}-${now}`,
         deviceId: device.id,
         deviceName: device.name,
         deviceType: device.type,
         deviceOwner: device.owner,
-        status: 'Active' as const,
+        status: SubscriptionStatus.ACTIVE,
         startDate: new Date(now),
         endDate: new Date(expiryTimestamp),
         daysRemaining,
