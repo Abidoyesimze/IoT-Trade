@@ -256,28 +256,28 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
       const daysRemaining = Math.ceil((expiryTimestamp - now) / (1000 * 60 * 60 * 24));
       
       // Create subscription from blockchain data
-      const newSubscription = {
+    const newSubscription = {
         id: `sub-${device.id}-${now}`,
-        deviceId: device.id,
-        deviceName: device.name,
-        deviceType: device.type,
-        deviceOwner: device.owner,
-        status: 'Active' as const,
+      deviceId: device.id,
+      deviceName: device.name,
+      deviceType: device.type,
+      deviceOwner: device.owner,
+      status: 'Active' as const,
         startDate: new Date(now),
         endDate: new Date(expiryTimestamp),
         daysRemaining,
         remainingBalance: deviceInfo.pricePerDataPoint,
-        dataPointsConsumed: 0,
-        autoRenewal: false
-      };
+      dataPointsConsumed: 0,
+      autoRenewal: false
+    };
 
-      addUserSubscription(newSubscription);
+    addUserSubscription(newSubscription);
       
       // Refresh subscriptions to ensure UI is up to date with blockchain data
       await refreshUserSubscriptions();
       
       // Navigate to stream page
-      router.push(`/stream/${device.id}`);
+    router.push(`/stream/${device.id}`);
     } catch (err: any) {
       console.error('Error purchasing subscription:', err);
       setError(err?.message || 'Failed to purchase subscription. Please try again.');
@@ -428,7 +428,7 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
                             ? `${Math.floor(device.subscriptionDuration / 86400)} day${Math.floor(device.subscriptionDuration / 86400) !== 1 ? 's' : ''}`
                             : 'Loading...'}
                         </p>
-                      </div>
+                          </div>
                       <div className="flex items-center justify-between">
                         <p className="body-base text-gray-700">Price</p>
                         <div className="text-right">
@@ -436,7 +436,7 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
                             {formatEthAmount(device.pricePerDataPoint)}
                           </p>
                         </div>
-                      </div>
+                            </div>
                       {device.subscriptionDuration && (
                         <div className="pt-3 border-t border-blue-200">
                           <p className="text-xs text-gray-600">
