@@ -40,12 +40,6 @@ export default function DevicePreviewPage({ params }: { params: Promise<{ id: st
     deviceName: string;
     daysRemaining: number;
   } | null>(null);
-  const [purchaseSuccess, setPurchaseSuccess] = useState<{
-    txHash: string;
-    deviceId: string;
-    deviceName: string;
-    daysRemaining: number;
-  } | null>(null);
   
   const defaultTab = searchParams.get('tab') || 'preview';
   
